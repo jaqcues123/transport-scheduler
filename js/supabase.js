@@ -10,7 +10,7 @@
 
 // The email for the shared team account.
 // The password is set in Supabase Auth — it's what dispatchers type to log in.
-var TEAM_EMAIL = 'team@netc.internal';
+var TEAM_EMAIL = 'team@netruckcenter.com';
 
 // Initialize the Supabase client.
 // `supabase` (lowercase) is the global exposed by the CDN script.
