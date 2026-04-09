@@ -171,6 +171,8 @@ function JobCard({ job, drivers, onUpdate, onRemove }) {
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <div className="pri" style={{ background: PRI_COLORS[pri] }} title={pri} />
         {job.tbCallNum && <span style={{ fontSize: 15, fontWeight: 800, color: C.pu }}>{job.tbCallNum}</span>}
+        {job.tbAccount && <span style={{ fontSize: 12, fontWeight: 700, color: C.ac }}>{job.tbAccount}</span>}
+        {job.tbDesc    && <span style={{ fontSize: 10, fontWeight: 600, color: C.tx, background: C.sf, padding: "1px 6px", borderRadius: 10 }}>{job.tbDesc.trim()}</span>}
         {job.tbReason  && <span style={{ fontSize: 9, color: C.dm, background: C.sf, padding: "1px 6px", borderRadius: 10 }}>{job.tbReason}</span>}
         {stops.length > 0 && <span style={{ fontSize: 8, color: C.am, background: C.ab, padding: "1px 5px", borderRadius: 8, fontWeight: 700 }}>{stops.length + 2} STOPS</span>}
         {job.status === "active"    && <span style={{ fontSize: 8, fontWeight: 700, padding: "2px 5px", borderRadius: 3, background: C.ab, color: C.am, animation: "pulse 2s infinite" }}>ACTIVE</span>}
@@ -550,8 +552,9 @@ function App() {
   const [fd,           setFd]           = useState("");
   const [newDr,        setNewDr]        = useState({ name: "", truck: "", yard: "exeter" });
   const [newYard,      setNewYard]      = useState({ short: "", addr: "", zip: "" });
-  const [reasonFilter, setReasonFilter] = useState(() => LS.get('filter', "EQUIPMENT TRANSPORT"));
-  const [lastSynced,   setLastSynced]   = useState(null);
+  const [reasonFilter,   setReasonFilter]   = useState(() => LS.get('filter', "EQUIPMENT TRANSPORT"));
+  const [locationFilter, setLocationFilter] = useState("ALL");
+  const [lastSynced,     setLastSynced]     = useState(null);
 
   // ── Initial data load from Supabase ────────────
   useEffect(() => {
@@ -876,8 +879,15 @@ function App() {
 
   // ── Derived state ───────────────────────────────
 
+  const LOC_MAP = { '1': 'NETC', '2': "Matt Brown's", '3': "Ray's", '4': 'Interstate' };
+  const locLabel = (cn) => { const s = (cn || '').replace(/^#/, ''); return LOC_MAP[s[0]] || null; };
+
   const calDays   = useMemo(() => genDays(21), []);
-  const filt      = (arr) => reasonFilter === "ALL" ? arr : arr.filter(j => (j.tbReason || "") === reasonFilter);
+  const filt      = (arr) => {
+    let out = reasonFilter === "ALL" ? arr : arr.filter(j => (j.tbReason || "") === reasonFilter);
+    if (locationFilter !== "ALL") out = out.filter(j => locLabel(j.tbCallNum) === locationFilter);
+    return out;
+  };
   const getStaff  = (d) => staffing[d] != null ? staffing[d] : drivers.length;
 
   const formYard  = useMemo(() => lz(fp) ? closestYard("", fp) : null, [fp]);
@@ -953,10 +963,23 @@ function App() {
 
     {/* Reason filter */}
     {(tab === "schedule" || tab === "drivers") && allReasons.length > 1 && <div className="fb">
-      <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>SHOW:</span>
+      <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>JOB TYPE:</span>
       {allReasons.map(r => <button key={r} className={"fbtn" + (reasonFilter === r ? " on" : "")} onClick={() => setReasonFilter(r)}>
         {r === "ALL" ? "All" : r} ({r === "ALL" ? jobs.filter(j => j.status !== "cancelled").length : jobs.filter(j => j.tbReason === r && j.status !== "cancelled").length})
       </button>)}
+    </div>}
+
+    {/* Location filter — derived from call number prefix */}
+    {(tab === "schedule" || tab === "drivers") && <div className="fb">
+      <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>LOCATION:</span>
+      {["ALL", "NETC", "Matt Brown's", "Ray's", "Interstate"].map(loc => {
+        const count = loc === "ALL"
+          ? jobs.filter(j => j.status !== "cancelled").length
+          : jobs.filter(j => j.status !== "cancelled" && locLabel(j.tbCallNum) === loc).length;
+        return <button key={loc} className={"fbtn" + (locationFilter === loc ? " on" : "")} onClick={() => setLocationFilter(loc)}>
+          {loc === "ALL" ? "All" : loc} ({count})
+        </button>;
+      })}
     </div>}
 
     {/* Calendar strip */}
