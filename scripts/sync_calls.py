@@ -5,15 +5,15 @@ Runs every 15 minutes via GitHub Actions.
 Sync logic:
   - New call (in TowBook, not in DB)       → INSERT
   - Existing call (in both)                → UPDATE address/schedule fields, preserve yard/driver assignments
-  - Scheduled job whose day has passed     → DELETE  (day < today, regardless of TowBook status)
+  - Jobs are NEVER deleted — kept for historical reporting in the History tab.
 
 Calls that move from Scheduled → Active in TowBook drop off the scraped tab
-but are intentionally kept in Supabase until the day rolls over so dispatchers
-can still see in-progress jobs for the current day.
+but are intentionally kept in Supabase so dispatchers can still see in-progress
+jobs for the current day, and so the History tab has a complete record.
 """
 
 import os, re, uuid
-from datetime import datetime, date
+from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 from supabase import create_client
 
@@ -200,16 +200,16 @@ def scrape_calls():
 # ── Supabase sync ──────────────────────────────────────────────────────────────
 
 def sync_to_supabase(tb_calls):
-    # Load all currently-scheduled jobs from Supabase, keyed by tb_call_num.
-    # We only touch 'scheduled' status jobs — active/complete/cancelled are left alone.
+    # Load ALL non-cancelled jobs keyed by tb_call_num so that jobs the
+    # dispatcher has already marked active/complete are not re-inserted as
+    # duplicates when TowBook still shows them on the scheduled tab.
     resp = sb.from_("jobs") \
-             .select("id, tb_call_num, yard_id, driver_id") \
-             .eq("status", "scheduled") \
+             .select("id, tb_call_num, yard_id, driver_id, status") \
+             .neq("status", "cancelled") \
              .execute()
 
-    existing     = {r["tb_call_num"]: r for r in (resp.data or []) if r.get("tb_call_num")}
-    tb_call_set  = {c["call_num"] for c in tb_calls}
-    now          = datetime.utcnow().isoformat()
+    existing = {r["tb_call_num"]: r for r in (resp.data or []) if r.get("tb_call_num")}
+    now      = datetime.now(timezone.utc).isoformat()
 
     inserts = []
     updates = []
@@ -255,18 +255,6 @@ def sync_to_supabase(tb_calls):
                 "updated_at":   now,
             })
 
-    # Delete scheduled jobs whose day has already passed.
-    # We do NOT delete based on absence from TowBook's scheduled tab — calls
-    # move to Active there once a driver picks up, but dispatchers still need
-    # to see them until the day is over.
-    today = date.today().isoformat()
-    resp_old = sb.from_("jobs") \
-                 .select("id") \
-                 .eq("status", "scheduled") \
-                 .lt("day", today) \
-                 .execute()
-    delete_ids = [r["id"] for r in (resp_old.data or [])]
-
     # Execute inserts
     if inserts:
         sb.from_("jobs").insert(inserts).execute()
@@ -279,24 +267,21 @@ def sync_to_supabase(tb_calls):
             sb.from_("jobs").update(u).eq("id", match["id"]).execute()
         print(f"  Updated {len(updates)} existing jobs")
 
-    # Execute deletes
-    if delete_ids:
-        sb.from_("jobs").delete().in_("id", delete_ids).execute()
-        print(f"  Deleted {len(delete_ids)} completed/cancelled jobs")
-
-    if not inserts and not updates and not delete_ids:
+    if not inserts and not updates:
         print("  No changes.")
+    # Jobs are never deleted — they are kept for historical reporting.
+    # The UI filters to the selected day; past jobs are visible in the History tab.
 
     # Record the sync timestamp so the UI can show "Last synced X min ago"
     sb.from_("settings").upsert(
-        {"key": "last_synced", "value": datetime.utcnow().isoformat() + "Z"},
+        {"key": "last_synced", "value": datetime.now(timezone.utc).isoformat()},
         on_conflict="key"
     ).execute()
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
-    print(f"[{datetime.utcnow().isoformat()}Z] Starting TowBook → Supabase sync")
+    print(f"[{datetime.now(timezone.utc).isoformat()}Z] Starting TowBook → Supabase sync")
 
     tb_calls = scrape_calls()
     print(f"Scraped {len(tb_calls)} calls from TowBook")

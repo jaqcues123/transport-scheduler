@@ -65,11 +65,11 @@ function jobToApp(row) {
 }
 
 function driverToDB(d) {
-  return { id: d.id, name: d.name, truck: d.truck || null, yard: d.yard };
+  return { id: d.id, name: d.name, truck: d.truck || null, yard: d.yard, function: d.func || null };
 }
 
 function driverToApp(row) {
-  return { id: row.id, name: row.name, truck: row.truck || '', yard: row.yard };
+  return { id: row.id, name: row.name, truck: row.truck || '', yard: row.yard, func: row.function || '' };
 }
 
 // ── Jobs ────────────────────────────────────────
