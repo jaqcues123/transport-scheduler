@@ -598,6 +598,9 @@ function MetricsTab({ jobs, drivers, viewDay, hpd, staffing, filtDriverCount }) 
 function SettingsTab({ yards, onAddYard, onUpdateYard, onDeleteYard, newYard, setNewYard,
                         drivers, onAddDriver, onUpdateDriver, onDeleteDriver, hpd, onSetHpd, newDr, setNewDr,
                         driverFunctions, ghRepo, ghToken, onSaveGH }) {
+  const [tokenInput,   setTokenInput]   = useState('');
+  const [tokenSaved,   setTokenSaved]   = useState(false);
+
   // Generate a stable slug ID from the yard's short name
   const toYardId = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 20);
 
@@ -628,9 +631,23 @@ function SettingsTab({ yards, onAddYard, onUpdateYard, onDeleteYard, newYard, se
             onBlur={e => onSaveGH('github_repo', e.target.value.trim())} />
         </div>
         <div>
-          <div style={{ fontSize: 9, color: C.dm, marginBottom: 2, textTransform: "uppercase", letterSpacing: 1 }}>Personal Access Token</div>
-          <input style={{ ...iS }} type="password" placeholder="ghp_…" defaultValue={ghToken}
-            onBlur={e => onSaveGH('github_token', e.target.value.trim())} />
+          <div style={{ fontSize: 9, color: C.dm, marginBottom: 2, textTransform: "uppercase", letterSpacing: 1 }}>
+            Personal Access Token
+            {ghToken && !tokenSaved && <span style={{ color: C.gn, marginLeft: 6 }}>✓ saved</span>}
+            {tokenSaved           && <span style={{ color: C.gn, marginLeft: 6 }}>✓ updated</span>}
+          </div>
+          <input style={{ ...iS }} type="password"
+            placeholder={ghToken ? "Token saved — paste new token to replace" : "ghp_…"}
+            value={tokenInput}
+            onChange={e => setTokenInput(e.target.value)}
+            onBlur={() => {
+              const val = tokenInput.trim();
+              if (!val) return;
+              onSaveGH('github_token', val);
+              setTokenInput('');
+              setTokenSaved(true);
+              setTimeout(() => setTokenSaved(false), 3000);
+            }} />
         </div>
       </div>
     </div>
