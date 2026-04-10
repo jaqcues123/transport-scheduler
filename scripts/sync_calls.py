@@ -200,79 +200,63 @@ def scrape_calls():
 # ── Supabase sync ──────────────────────────────────────────────────────────────
 
 def sync_to_supabase(tb_calls):
-    # Load ALL non-cancelled jobs keyed by tb_call_num so that jobs the
-    # dispatcher has already marked active/complete are not re-inserted as
-    # duplicates when TowBook still shows them on the scheduled tab.
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Load ALL existing jobs (no status filter) to preserve dispatcher-managed fields
     resp = sb.from_("jobs") \
-             .select("id, tb_call_num, yard_id, driver_id, status") \
-             .neq("status", "cancelled") \
+             .select("id, tb_call_num, yard_id, driver_id, status, priority, notes") \
              .execute()
 
     existing = {r["tb_call_num"]: r for r in (resp.data or []) if r.get("tb_call_num")}
-    now      = datetime.now(timezone.utc).isoformat()
 
-    inserts = []
-    updates = []
+    upserts = []
 
     for call in tb_calls:
         cn = call["call_num"]
+        ex = existing.get(cn)
 
-        if cn in existing:
-            # Update address/schedule fields; preserve yard_id, driver_id, status, priority, notes
-            updates.append({
-                "match":        {"id": existing[cn]["id"]},
-                "pickup_addr":  call["pickup"],
-                "drop_addr":    call["drop"],
-                "pickup_zip":   call["pickup_zip"],
-                "drop_zip":     call["drop_zip"],
-                "tb_desc":      call["desc"],
-                "tb_account":   call["account"],
-                "tb_scheduled": call["scheduled"],
-                "tb_reason":    call["reason"],
-                "tb_driver":    call["driver"],
-                "day":          call["day"],
-                "updated_at":   now,
-            })
+        row = {
+            "tb_call_num":  cn,
+            "tb_desc":      call["desc"],
+            "tb_account":   call["account"],
+            "pickup_addr":  call["pickup"],
+            "drop_addr":    call["drop"],
+            "pickup_zip":   call["pickup_zip"],
+            "drop_zip":     call["drop_zip"],
+            "tb_scheduled": call["scheduled"],
+            "tb_reason":    call["reason"],
+            "tb_driver":    call["driver"],
+            "day":          call["day"],
+            "updated_at":   now,
+        }
+
+        if ex:
+            # Existing record — carry forward dispatcher-managed fields
+            row["id"]        = ex["id"]
+            row["yard_id"]   = ex["yard_id"]
+            row["driver_id"] = ex["driver_id"]
+            row["status"]    = ex["status"]
+            row["priority"]  = ex["priority"]
+            row["notes"]     = ex.get("notes")
         else:
-            # New call — insert with no yard/driver assignment (planner UI handles that)
-            inserts.append({
-                "id":           str(uuid.uuid4()),
-                "tb_call_num":  cn,
-                "tb_desc":      call["desc"],
-                "tb_account":   call["account"],
-                "pickup_addr":  call["pickup"],
-                "drop_addr":    call["drop"],
-                "pickup_zip":   call["pickup_zip"],
-                "drop_zip":     call["drop_zip"],
-                "tb_scheduled": call["scheduled"],
-                "tb_reason":    call["reason"],
-                "tb_driver":    call["driver"],
-                "priority":     "normal",
-                "status":       "scheduled",
-                "day":          call["day"],
-                "stops":        [],
-                "added_at":     now,
-                "updated_at":   now,
-            })
+            # New call — set defaults
+            row["id"]       = str(uuid.uuid4())
+            row["priority"] = "normal"
+            row["status"]   = "scheduled"
+            row["stops"]    = []
+            row["added_at"] = now
 
-    # Execute inserts
-    if inserts:
-        sb.from_("jobs").insert(inserts).execute()
-        print(f"  Inserted {len(inserts)} new jobs")
+        upserts.append(row)
 
-    # Execute updates (one call per row to preserve partial updates)
-    if updates:
-        for u in updates:
-            match = u.pop("match")
-            sb.from_("jobs").update(u).eq("id", match["id"]).execute()
-        print(f"  Updated {len(updates)} existing jobs")
+    if upserts:
+        sb.from_("jobs").upsert(upserts, on_conflict="tb_call_num").execute()
+        new_count = len([u for u in upserts if "added_at" in u])
+        upd_count = len(upserts) - new_count
+        print(f"  Inserted {new_count} new jobs, updated {upd_count} existing jobs")
+    else:
+        print("  No calls to sync.")
 
-    if not inserts and not updates:
-        print("  No changes.")
-    # Jobs are never deleted — they are kept for historical reporting.
-    # The UI filters to the selected day; past jobs are visible in the History tab.
-
-    # Record the sync timestamp so the UI can show "Last synced X min ago"
+    # Record sync timestamp for the UI "Last synced X min ago" display
     sb.from_("settings").upsert(
         {"key": "last_synced", "value": datetime.now(timezone.utc).isoformat()},
         on_conflict="key"
