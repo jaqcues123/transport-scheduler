@@ -282,11 +282,14 @@ function JobCard({ job, drivers, onUpdate, onRemove }) {
 }
 
 // ── DriversTab ──────────────────────────────────
-function DriversTab({ jobs, drivers, viewDay, hpd }) {
+function DriversTab({ jobs, drivers, viewDay, hpd, onExportCSV }) {
   const dayJobs = jobs.filter(j => j.day === viewDay && j.status !== "cancelled");
 
   return <div>
-    <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>{dayFull(viewDay)} - Driver Schedules</div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+      <div style={{ fontSize: 14, fontWeight: 700 }}>{dayFull(viewDay)} - Driver Schedules</div>
+      {dayJobs.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn, fontSize: 10 }} onClick={() => onExportCSV(dayJobs, "drivers-" + viewDay + ".csv")}>⬇ CSV</button>}
+    </div>
     {drivers.map(d => {
       const dj      = dayJobs.filter(j => j.driverId === d.id);
       const totalH  = dj.reduce((s, j) => s + jobTotal(j), 0);
@@ -300,6 +303,7 @@ function DriversTab({ jobs, drivers, viewDay, hpd }) {
           <div>
             <span style={{ fontSize: 14, fontWeight: 700 }}>{dLb(d)}</span>
             <span style={{ fontSize: 10, color: C.dm, marginLeft: 8 }}>{YARDS.find(y => y.id === d.yard)?.short}</span>
+            {d.func && <span style={{ fontSize: 10, color: C.ac, marginLeft: 6, padding: "1px 6px", borderRadius: 10, background: C.ad }}>{d.func}</span>}
             {dj.some(j => j.status === "active") && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 3, background: C.ab, color: C.am, marginLeft: 6, animation: "pulse 2s infinite" }}>ON JOB</span>}
           </div>
           <div style={{ textAlign: "right" }}>
@@ -314,28 +318,184 @@ function DriversTab({ jobs, drivers, viewDay, hpd }) {
           <span>{dj.length} jobs · {fMi(totalMi)}</span>
           <span style={{ color: col }}>{fD(avail)} available</span>
         </div>
-        {dj.length > 0 && <div style={{ position: "relative", height: 36 * dj.length, background: C.sf, borderRadius: 6, overflow: "hidden" }}>
-          {dj.map((j, idx) => {
-            const startPct = (dj.slice(0, idx).reduce((s, jj) => s + jobTotal(jj), 0) / hpd) * 100;
-            const widthPct = Math.min((jobTotal(j) / hpd) * 100, 100 - startPct);
-            const puN      = j.pickupAddr ? cityFrom(j.pickupAddr) : (lz(j.pickupZip)?.label || "?");
-            const drNN     = j.dropAddr   ? cityFrom(j.dropAddr)   : (lz(j.dropZip)?.label   || "?");
-            const barCol   = j.status === "active" ? C.am : j.status === "complete" ? C.gn : C.ac;
-            return <div key={j.id} className="gantt-bar" style={{ top: idx * 36 + 4, left: startPct + "%", width: Math.max(widthPct, 8) + "%", background: barCol + "33", border: "1px solid " + barCol, color: C.tx }}>
-              <span style={{ color: C.pu, fontWeight: 800, marginRight: 4 }}>{j.tbCallNum || "?"}</span>
-              {puN} → {drNN}
-              <span style={{ marginLeft: "auto", color: barCol, fontWeight: 700, paddingLeft: 4 }}>{fH(jobTotal(j))}</span>
-            </div>;
-          })}
-        </div>}
+        {dj.length > 0 && (() => {
+          const PX_HR  = 50; // pixels per hour
+          const totalH = dj.reduce((s, j) => { const t = jobTotal(j); return s + (isFinite(t) && t > 0 ? t : 1); }, 0);
+          const innerW = Math.max(totalH, hpd) * PX_HR;
+          return (
+            <div style={{ overflowX: "auto", borderRadius: 6 }}>
+              <div style={{ position: "relative", height: 36 * dj.length, width: innerW, background: C.sf, borderRadius: 6 }}>
+                {dj.map((j, idx) => {
+                  const jh      = jobTotal(j);
+                  const safeH   = isFinite(jh) && jh > 0 ? jh : 1;
+                  const startH  = dj.slice(0, idx).reduce((s, jj) => { const t = jobTotal(jj); return s + (isFinite(t) && t > 0 ? t : 1); }, 0);
+                  const puN     = j.pickupAddr ? cityFrom(j.pickupAddr) : (lz(j.pickupZip)?.label || "?");
+                  const drNN    = j.dropAddr   ? cityFrom(j.dropAddr)   : (lz(j.dropZip)?.label   || "?");
+                  const barCol  = j.status === "active" ? C.am : j.status === "complete" ? C.gn : C.ac;
+                  return <div key={j.id} className="gantt-bar" style={{ top: idx * 36 + 4, left: startH * PX_HR, width: safeH * PX_HR, background: barCol + "33", border: "1px solid " + barCol, color: C.tx }}>
+                    <span style={{ color: C.pu, fontWeight: 800, marginRight: 4 }}>{j.tbCallNum || "?"}</span>
+                    {puN} → {drNN}
+                    <span style={{ marginLeft: "auto", color: barCol, fontWeight: 700, paddingLeft: 4 }}>{fH(jh)}</span>
+                  </div>;
+                })}
+              </div>
+            </div>
+          );
+        })()}
         {dj.length === 0 && <div style={{ fontSize: 11, color: C.dm, textAlign: "center", padding: 10 }}>No jobs assigned</div>}
       </div>;
     })}
   </div>;
 }
 
+// ── HistoryTab ──────────────────────────────────
+// Shows completed jobs for the past 7 days with estimated vs actual time.
+// Includes a CSV download for comparison reporting.
+function HistoryTab({ jobs, drivers }) {
+  const [histDay, setHistDay] = React.useState(null);
+
+  // Build list of past days (last 7 days excluding today)
+  const pastDays = React.useMemo(() => {
+    const days = [];
+    for (let i = 1; i <= 7; i++) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      days.push(isoD(d));
+    }
+    return days;
+  }, []);
+
+  const selectedDay = histDay || pastDays[0];
+
+  // Jobs for selected day — all statuses so dispatchers can see what was scheduled vs completed
+  const dayJobs = jobs.filter(j => j.day === selectedDay && j.status !== "cancelled");
+
+  const driverName = (id) => drivers.find(d => d.id === id)?.name || "Unassigned";
+
+  // Actual hours between startedAt and completedAt
+  const actualH = (job) => {
+    if (!job.startedAt || !job.completedAt) return null;
+    return (new Date(job.completedAt) - new Date(job.startedAt)) / 3600000;
+  };
+
+  // CSV export
+  const downloadCSV = () => {
+    const rows = [
+      ["Date", "Call#", "Account", "Description", "Driver", "Reason", "Pickup", "Drop", "Est Hours", "Actual Hours", "Started", "Completed", "Status"]
+    ];
+    for (const j of dayJobs) {
+      const est = jobTotal(j);
+      const act = actualH(j);
+      rows.push([
+        j.day,
+        j.tbCallNum || "",
+        j.tbAccount || "",
+        j.tbDesc    || "",
+        driverName(j.driverId),
+        j.tbReason  || "",
+        j.pickupAddr || "",
+        j.dropAddr   || "",
+        isFinite(est) ? est.toFixed(2) : "",
+        act != null  ? act.toFixed(2)  : "",
+        j.startedAt   ? new Date(j.startedAt).toLocaleString()   : "",
+        j.completedAt ? new Date(j.completedAt).toLocaleString() : "",
+        j.status,
+      ]);
+    }
+    const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = "jobs-" + selectedDay + ".csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const complete = dayJobs.filter(j => j.status === "complete");
+  const incomplete = dayJobs.filter(j => j.status !== "complete");
+
+  return <div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+      <div style={{ fontSize: 14, fontWeight: 700 }}>Job History</div>
+      {dayJobs.length > 0 && <button style={{ ...bP, background: C.gn, fontSize: 10 }} onClick={downloadCSV}>⬇ Download CSV</button>}
+    </div>
+
+    {/* Day selector */}
+    <div style={{ display: "flex", gap: 4, marginBottom: 12, flexWrap: "wrap" }}>
+      {pastDays.map(d => <button key={d} style={{ ...bSt, ...(selectedDay === d ? { color: C.ac, borderColor: C.ac } : {}) }} onClick={() => setHistDay(d)}>
+        {new Date(d + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+      </button>)}
+    </div>
+
+    {/* Summary row */}
+    {dayJobs.length > 0 && <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+      <div style={{ ...cB, flex: 1, textAlign: "center", padding: "8px 4px" }}>
+        <div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 2 }}>Total Jobs</div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.ac }}>{dayJobs.length}</div>
+      </div>
+      <div style={{ ...cB, flex: 1, textAlign: "center", padding: "8px 4px" }}>
+        <div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 2 }}>Completed</div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.gn }}>{complete.length}</div>
+      </div>
+      <div style={{ ...cB, flex: 1, textAlign: "center", padding: "8px 4px" }}>
+        <div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 2 }}>Est Hours</div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.am }}>{fH(dayJobs.reduce((s, j) => { const t = jobTotal(j); return s + (isFinite(t) ? t : 0); }, 0))}</div>
+      </div>
+      <div style={{ ...cB, flex: 1, textAlign: "center", padding: "8px 4px" }}>
+        <div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 2 }}>Actual Hours</div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.pu }}>{fH(complete.reduce((s, j) => { const a = actualH(j); return s + (a != null ? a : 0); }, 0))}</div>
+      </div>
+    </div>}
+
+    {/* Completed jobs */}
+    {complete.length > 0 && <>
+      <div style={{ fontSize: 9, fontWeight: 700, color: C.gn, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Completed ({complete.length})</div>
+      {complete.map(j => {
+        const est = jobTotal(j);
+        const act = actualH(j);
+        const diff = (act != null && isFinite(est)) ? act - est : null;
+        return <div key={j.id} style={{ ...cB, padding: "10px 12px", marginBottom: 5 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+            <div>
+              {j.tbCallNum && <span style={{ fontSize: 14, fontWeight: 800, color: C.pu, marginRight: 8 }}>{j.tbCallNum}</span>}
+              {j.tbAccount && <span style={{ fontSize: 12, fontWeight: 600, color: C.ac, marginRight: 6 }}>{j.tbAccount}</span>}
+              {j.tbDesc    && <span style={{ fontSize: 11, color: C.dm }}>{j.tbDesc}</span>}
+            </div>
+            <span style={{ fontSize: 11, color: C.dm }}>{driverName(j.driverId)}</span>
+          </div>
+          <div style={{ fontSize: 11, color: C.tx, marginBottom: 6 }}>{j.pickupAddr || j.pickupZip || "?"} → {j.dropAddr || j.dropZip || "?"}</div>
+          <div style={{ display: "flex", gap: 12, fontSize: 10 }}>
+            <span style={{ color: C.dm }}>Est: <strong style={{ color: C.am }}>{isFinite(est) ? fH(est) : "--"}</strong></span>
+            <span style={{ color: C.dm }}>Actual: <strong style={{ color: act != null ? C.gn : C.dm }}>{act != null ? fH(act) : "--"}</strong></span>
+            {diff != null && <span style={{ color: diff > 0 ? C.rd : C.gn, fontWeight: 700 }}>
+              {diff > 0 ? "+" : ""}{fH(Math.abs(diff))} {diff > 0 ? "over" : "under"}
+            </span>}
+            {j.startedAt   && <span style={{ color: C.dm }}>Start: <strong style={{ color: C.tx }}>{fT(j.startedAt)}</strong></span>}
+            {j.completedAt && <span style={{ color: C.dm }}>Done: <strong style={{ color: C.tx }}>{fT(j.completedAt)}</strong></span>}
+          </div>
+        </div>;
+      })}
+    </>}
+
+    {/* Incomplete jobs (scheduled/active that didn't get marked done) */}
+    {incomplete.length > 0 && <>
+      <div style={{ fontSize: 9, fontWeight: 700, color: C.am, textTransform: "uppercase", letterSpacing: 1, marginTop: 10, marginBottom: 4 }}>Not Completed ({incomplete.length})</div>
+      {incomplete.map(j => <div key={j.id} style={{ ...cB, padding: "10px 12px", marginBottom: 5, opacity: 0.65 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            {j.tbCallNum && <span style={{ fontSize: 13, fontWeight: 800, color: C.pu, marginRight: 8 }}>{j.tbCallNum}</span>}
+            {j.tbAccount && <span style={{ fontSize: 11, color: C.ac, marginRight: 6 }}>{j.tbAccount}</span>}
+          </div>
+          <span style={{ fontSize: 10, color: C.dm }}>{driverName(j.driverId)}</span>
+        </div>
+        <div style={{ fontSize: 11, color: C.tx, marginTop: 3 }}>{j.pickupAddr || j.pickupZip || "?"} → {j.dropAddr || j.dropZip || "?"}</div>
+      </div>)}
+    </>}
+
+    {dayJobs.length === 0 && <div style={{ ...cB, textAlign: "center", padding: 20, color: C.dm, fontSize: 11 }}>No jobs recorded for this day.</div>}
+  </div>;
+}
+
 // ── MetricsTab ──────────────────────────────────
-function MetricsTab({ jobs, drivers, viewDay, hpd, staffing }) {
+function MetricsTab({ jobs, drivers, viewDay, hpd, staffing, filtDriverCount }) {
   const week       = genDays(7);
   const activeJobs = jobs.filter(j => j.status !== "cancelled");
 
@@ -353,17 +513,18 @@ function MetricsTab({ jobs, drivers, viewDay, hpd, staffing }) {
   const typeEntries = Object.entries(typeBreak).sort((a, b) => b[1] - a[1]);
   const typeTotal   = typeEntries.reduce((s, e) => s + e[1], 0);
 
+  const defaultStaff = 8;
   const weekStats = week.map(iso => {
     const dj     = activeJobs.filter(j => j.day === iso);
     const totalH = dj.reduce((s, j) => s + jobTotal(j), 0);
-    const staff  = staffing[iso] != null ? staffing[iso] : drivers.length;
+    const staff  = staffing[iso] != null ? staffing[iso] : defaultStaff;
     const cap    = staff * hpd;
     return { iso, n: dj.length, totalH, cap, pct: cap > 0 ? totalH / cap * 100 : 0 };
   });
 
   const fleetWeekH   = driverStats.reduce((s, d) => s + d.weekH,  0);
   const fleetWeekMi  = driverStats.reduce((s, d) => s + d.weekMi, 0);
-  const fleetCapH    = week.reduce((s, iso) => { const st = staffing[iso] != null ? staffing[iso] : drivers.length; return s + st * hpd; }, 0);
+  const fleetCapH    = week.reduce((s, iso) => { const st = staffing[iso] != null ? staffing[iso] : defaultStaff; return s + st * hpd; }, 0);
   const fleetUtil    = fleetCapH > 0 ? fleetWeekH / fleetCapH * 100 : 0;
   const weekJobCount = activeJobs.filter(j => week.includes(j.day)).length;
   const avgJobH      = weekJobCount > 0 ? fleetWeekH / weekJobCount : 0;
@@ -435,7 +596,8 @@ function MetricsTab({ jobs, drivers, viewDay, hpd, staffing }) {
 // Props changed from generic setDrivers/setHpd to explicit callbacks
 // so each operation can write to Supabase immediately.
 function SettingsTab({ yards, onAddYard, onUpdateYard, onDeleteYard, newYard, setNewYard,
-                        drivers, onAddDriver, onUpdateDriver, onDeleteDriver, hpd, onSetHpd, newDr, setNewDr }) {
+                        drivers, onAddDriver, onUpdateDriver, onDeleteDriver, hpd, onSetHpd, newDr, setNewDr,
+                        driverFunctions }) {
   // Generate a stable slug ID from the yard's short name
   const toYardId = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 20);
 
@@ -449,8 +611,8 @@ function SettingsTab({ yards, onAddYard, onUpdateYard, onDeleteYard, newYard, se
 
   const addDr = () => {
     if (!newDr.name.trim()) return;
-    onAddDriver({ id: uid(), name: newDr.name.trim(), truck: newDr.truck.trim(), yard: newDr.yard });
-    setNewDr({ name: "", truck: "", yard: "exeter" });
+    onAddDriver({ id: uid(), name: newDr.name.trim(), truck: newDr.truck.trim(), yard: newDr.yard, func: newDr.func });
+    setNewDr({ name: "", truck: "", yard: "exeter", func: "Transport" });
   };
 
   return <div>
@@ -504,11 +666,14 @@ function SettingsTab({ yards, onAddYard, onUpdateYard, onDeleteYard, newYard, se
 
     <div style={{ ...cB, padding: 14 }}>
       <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Driver Roster</div>
-      <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
-        <input style={{ ...iS, flex: 1 }} placeholder="Name" value={newDr.name} onChange={e => setNewDr({ ...newDr, name: e.target.value })} onKeyDown={e => { if (e.key === "Enter") addDr(); }} />
+      <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}>
+        <input style={{ ...iS, flex: 1, minWidth: 100 }} placeholder="Name" value={newDr.name} onChange={e => setNewDr({ ...newDr, name: e.target.value })} onKeyDown={e => { if (e.key === "Enter") addDr(); }} />
         <input style={{ ...iS, width: 55 }} placeholder="Truck#" value={newDr.truck} onChange={e => setNewDr({ ...newDr, truck: e.target.value })} />
         <select style={{ ...sS, width: 110, fontSize: 11 }} value={newDr.yard} onChange={e => setNewDr({ ...newDr, yard: e.target.value })}>
           {yards.map(y => <option key={y.id} value={y.id}>{y.short}</option>)}
+        </select>
+        <select style={{ ...sS, width: 140, fontSize: 11 }} value={newDr.func} onChange={e => setNewDr({ ...newDr, func: e.target.value })}>
+          {driverFunctions.map(f => <option key={f} value={f}>{f}</option>)}
         </select>
         <button style={{ ...bP, padding: "5px 10px" }} onClick={addDr}>+</button>
       </div>
@@ -517,11 +682,15 @@ function SettingsTab({ yards, onAddYard, onUpdateYard, onDeleteYard, newYard, se
         if (!yd.length) return null;
         return <div key={y.id} style={{ marginBottom: 5 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: C.ac, marginBottom: 2 }}>{y.short} ({yd.length})</div>
-          {yd.map(d => <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 3, padding: "2px 5px", marginBottom: 1, background: C.sf, borderRadius: 4, border: "1px solid " + C.bd }}>
-            <input style={{ ...iS, flex: 1, padding: "2px 5px", fontSize: 11, fontWeight: 600, background: "transparent", border: "none" }} value={d.name} onChange={e => onUpdateDriver(d.id, { name: e.target.value })} />
+          {yd.map(d => <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 3, padding: "2px 5px", marginBottom: 1, background: C.sf, borderRadius: 4, border: "1px solid " + C.bd, flexWrap: "wrap" }}>
+            <input style={{ ...iS, flex: 1, minWidth: 80, padding: "2px 5px", fontSize: 11, fontWeight: 600, background: "transparent", border: "none" }} value={d.name} onChange={e => onUpdateDriver(d.id, { name: e.target.value })} />
             <input style={{ ...iS, width: 40, padding: "2px 4px", fontSize: 10, background: "transparent", border: "1px solid " + C.bd }} value={d.truck || ""} onChange={e => onUpdateDriver(d.id, { truck: e.target.value })} />
             <select style={{ ...sS, width: 90, padding: "2px 4px", fontSize: 10 }} value={d.yard} onChange={e => onUpdateDriver(d.id, { yard: e.target.value })}>
               {yards.map(v => <option key={v.id} value={v.id}>{v.short}</option>)}
+            </select>
+            <select style={{ ...sS, width: 140, padding: "2px 4px", fontSize: 10 }} value={d.func || ""} onChange={e => onUpdateDriver(d.id, { func: e.target.value })}>
+              <option value="">— Function —</option>
+              {driverFunctions.map(f => <option key={f} value={f}>{f}</option>)}
             </select>
             <button style={{ ...bSt, padding: "1px 3px", color: C.rd }} onClick={() => onDeleteDriver(d.id)}>✕</button>
           </div>)}
@@ -734,7 +903,7 @@ function App() {
   const [now,          setNow]          = useState(new Date());
   const [fp,           setFp]           = useState("");
   const [fd,           setFd]           = useState("");
-  const [newDr,        setNewDr]        = useState({ name: "", truck: "", yard: "exeter" });
+  const [newDr,        setNewDr]        = useState({ name: "", truck: "", yard: "exeter", func: "Transport" });
   const [newYard,      setNewYard]      = useState({ short: "", addr: "", zip: "" });
   const [reasonFilter,   setReasonFilter]   = useState(() => LS.get('filter', "EQUIPMENT TRANSPORT"));
   const [locationFilter, setLocationFilter] = useState("ALL");
@@ -1003,6 +1172,30 @@ function App() {
     });
   };
 
+  // ── CSV export ──────────────────────────────────
+
+  const exportCSV = (jobList, filename) => {
+    const driverName = (id) => drivers.find(d => d.id === id)?.name || "Unassigned";
+    const rows = [
+      ["Date", "Call#", "Account", "Description", "Driver", "Yard", "Reason", "Pickup", "Drop", "Est Hours", "Status"]
+    ];
+    for (const j of jobList) {
+      const est = jobTotal(j);
+      const yard = YARDS.find(y => y.id === j.yardId)?.short || "";
+      rows.push([
+        j.day, j.tbCallNum || "", j.tbAccount || "", j.tbDesc || "",
+        driverName(j.driverId), yard, j.tbReason || "",
+        j.pickupAddr || "", j.dropAddr || "",
+        isFinite(est) ? est.toFixed(2) : "", j.status,
+      ]);
+    }
+    const csv  = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a"); a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // ── Settings operations ─────────────────────────
 
   const updateHpd = (n) => {
@@ -1167,13 +1360,49 @@ function App() {
   const LOC_MAP = { '1': 'NETC', '2': "Matt Brown's", '3': "Ray's", '4': 'Interstate' };
   const locLabel = (cn) => { const s = (cn || '').replace(/^#/, ''); return LOC_MAP[s[0]] || null; };
 
+  // Driver function values
+  const DRIVER_FUNCTIONS = ["Transport", "Heavy Duty Towing", "Road Service", "Light Duty Towing"];
+
+  // TowBook reason → driver function(s) that can handle it
+  const REASON_TO_FUNC = {
+    "Crane Service":             ["Heavy Duty Towing"],
+    "Equipment Transport":       ["Transport"],
+    "HDT - Equipment Transport": ["Transport", "Heavy Duty Towing"],
+    "Heavy Duty Tow":            ["Heavy Duty Towing"],
+    "Light Duty Tow":            ["Light Duty Towing"],
+    "Road Service":              ["Road Service"],
+  };
+
+  // Location filter → yard IDs that serve those calls (null = no restriction)
+  const LOC_TO_YARDS = {
+    "NETC":        ["exeter", "pembroke"],
+    "Matt Brown's":["mattbrowns"],
+    "Ray's":       ["rays"],
+    "Interstate":  null,
+  };
+
+  // Drivers filtered by the active reason + location filters
+  const filtDrivers = useMemo(() => {
+    let out = drivers;
+    if (locationFilter !== "ALL") {
+      const yardIds = LOC_TO_YARDS[locationFilter];
+      if (yardIds) out = out.filter(d => yardIds.includes(d.yard));
+    }
+    if (reasonFilter !== "ALL") {
+      const funcs = REASON_TO_FUNC[reasonFilter];
+      if (funcs) out = out.filter(d => !d.func || funcs.includes(d.func));
+    }
+    return out;
+  }, [drivers, locationFilter, reasonFilter]);
+
   const calDays   = useMemo(() => genDays(21), []);
   const filt      = (arr) => {
     let out = reasonFilter === "ALL" ? arr : arr.filter(j => (j.tbReason || "") === reasonFilter);
     if (locationFilter !== "ALL") out = out.filter(j => locLabel(j.tbCallNum) === locationFilter);
     return out;
   };
-  const getStaff  = (d) => staffing[d] != null ? staffing[d] : drivers.length;
+  // Default staffing = 8 unless the user has set a manual per-day override via the +/− buttons.
+  const getStaff  = (d) => staffing[d] != null ? staffing[d] : 8;
 
   const formYard  = useMemo(() => lz(fp) ? closestYard("", fp) : null, [fp]);
   const formCalc  = useMemo(() => { if (!formYard || !lz(fp) || !lz(fd)) return null; return jCalc(formYard.addr, formYard.zip, "", fp, "", fd); }, [formYard, fp, fd]);
@@ -1185,13 +1414,15 @@ function App() {
   }, [jobs]);
 
   function daySt(iso) {
-    const djAll  = dayJobMap[iso] || [];
-    const dj     = filt(djAll);
-    const totalH = dj.reduce((s, j) => s + jobTotal(j), 0);
-    const staff  = getStaff(iso);
-    const cap    = staff * hpd;
+    const djAll    = dayJobMap[iso] || [];
+    const dj       = filt(djAll);
+    // Remaining = active + scheduled only — completed jobs no longer count toward capacity need
+    const remaining = dj.filter(j => j.status !== "complete");
+    const totalH   = remaining.reduce((s, j) => s + jobTotal(j), 0);
+    const staff    = getStaff(iso);
+    const cap      = staff * hpd;
     return { n: dj.length, totalH, staff, cap, pct: cap > 0 ? totalH / cap * 100 : 0,
-      need: Math.ceil(totalH / hpd), assigned: dj.filter(j => j.driverId).length,
+      need: Math.ceil(totalH / hpd), assigned: remaining.filter(j => j.driverId).length,
       active: dj.filter(j => j.status === "active").length,
       sched:  dj.filter(j => j.status === "scheduled").length,
       done:   dj.filter(j => j.status === "complete").length };
@@ -1241,7 +1472,7 @@ function App() {
 
     {/* Tabs */}
     <div className="tabs">
-      {[["schedule", "📋 Schedule"], ["drivers", "👥 Drivers"], ["metrics", "📊 Metrics (WIP)"], ["settings", "⚙ Settings"]].map(([k, l]) =>
+      {[["schedule", "📋 Schedule"], ["drivers", "👥 Drivers"], ["metrics", "📊 Metrics (WIP)"], ["history", "🕓 History"], ["settings", "⚙ Settings"]].map(([k, l]) =>
         <div key={k} className={"tab" + (tab === k ? " on" : "")} onClick={() => setTab(k)}>{l}</div>
       )}
     </div>
@@ -1348,6 +1579,7 @@ function App() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
         <button style={{ ...bSt, color: C.pu, borderColor: C.pu }} onClick={doImport}>📋 Import TowBook</button>
         <div style={{ display: "flex", gap: 6 }}>
+          {vJobs.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn }} onClick={() => exportCSV(vJobs, "schedule-" + viewDay + ".csv")}>⬇ CSV</button>}
           {vSch.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn }} onClick={runOptimizer}>⚡ Optimize Day</button>}
           <button style={bP} onClick={() => setShowForm(!showForm)}>{showForm ? "Cancel" : "+ Add Job"}</button>
         </div>
@@ -1386,8 +1618,9 @@ function App() {
       </div>}
     </>}
 
-    {tab === "drivers"  && <DriversTab jobs={filt(jobs.filter(j => j.status !== "cancelled"))} drivers={drivers} viewDay={viewDay} hpd={hpd} />}
-    {tab === "metrics"  && <MetricsTab jobs={jobs} drivers={drivers} viewDay={viewDay} hpd={hpd} staffing={staffing} />}
+    {tab === "drivers"  && <DriversTab jobs={filt(jobs.filter(j => j.status !== "cancelled"))} drivers={filtDrivers} viewDay={viewDay} hpd={hpd} onExportCSV={exportCSV} />}
+    {tab === "metrics"  && <MetricsTab jobs={jobs} drivers={drivers} viewDay={viewDay} hpd={hpd} staffing={staffing} filtDriverCount={filtDrivers.length} />}
+    {tab === "history"  && <HistoryTab jobs={jobs} drivers={drivers} />}
     {tab === "settings" && <SettingsTab
       yards={yards}
       onAddYard={addYard} onUpdateYard={updateYard} onDeleteYard={removeYard}
@@ -1396,6 +1629,7 @@ function App() {
       onAddDriver={addDriver} onUpdateDriver={updateDriver} onDeleteDriver={removeDriver}
       hpd={hpd} onSetHpd={updateHpd}
       newDr={newDr} setNewDr={setNewDr}
+      driverFunctions={DRIVER_FUNCTIONS}
     />}
 
     <div style={{ marginTop: 12, padding: "5px 0", borderTop: "1px solid " + C.bd, fontSize: 8, color: C.dm, display: "flex", justifyContent: "space-between" }}>
