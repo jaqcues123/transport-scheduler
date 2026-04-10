@@ -17,7 +17,7 @@
          └── SettingsTab
    ═══════════════════════════════════════════════ */
 
-const { useState, useMemo, useEffect, useCallback } = React;
+const { useState, useMemo, useEffect } = React;
 
 // ── LoginScreen ─────────────────────────────────
 // Shown when there is no active Supabase session.
@@ -597,7 +597,7 @@ function MetricsTab({ jobs, drivers, viewDay, hpd, staffing, filtDriverCount }) 
 // so each operation can write to Supabase immediately.
 function SettingsTab({ yards, onAddYard, onUpdateYard, onDeleteYard, newYard, setNewYard,
                         drivers, onAddDriver, onUpdateDriver, onDeleteDriver, hpd, onSetHpd, newDr, setNewDr,
-                        driverFunctions }) {
+                        driverFunctions, ghRepo, ghToken, onSaveGH }) {
   // Generate a stable slug ID from the yard's short name
   const toYardId = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 20);
 
@@ -619,15 +619,19 @@ function SettingsTab({ yards, onAddYard, onUpdateYard, onDeleteYard, newYard, se
     <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Settings</div>
 
     <div style={{ ...cB, padding: 14, marginBottom: 10 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, color: C.pu, marginBottom: 6 }}>TowBook Import</div>
-      <div style={{ fontSize: 11, color: C.dm, lineHeight: 1.7, marginBottom: 8 }}>Drag button to bookmarks (one-time). Then: TowBook → click bookmark → here → Import.</div>
-      <div style={{ background: C.sf, borderRadius: 8, padding: 12, textAlign: "center", border: "1px solid " + C.bd, marginBottom: 8 }}>
-        <a href={window.NETC_BM} onClick={e => e.preventDefault()} style={{ display: "inline-block", background: C.pu, color: C.wh, padding: "10px 22px", borderRadius: 8, fontSize: 13, fontWeight: 700, textDecoration: "none", cursor: "grab" }}>📋 Pull TowBook</a>
-        <div style={{ fontSize: 9, color: C.dm, marginTop: 5 }}>↑ Drag to bookmarks bar</div>
-      </div>
-      <div style={{ fontSize: 10, color: C.dm, padding: 6, background: C.inp, borderRadius: 5, border: "1px solid " + C.bd }}>
-        <strong style={{ color: C.am }}>Console backup:</strong> F12 → Console → <code style={{ color: C.tx }}>allow pasting</code> → Enter → paste → Enter
-        <button style={{ ...bP, background: C.am, fontSize: 9, padding: "2px 8px", marginLeft: 6 }} onClick={() => { navigator.clipboard.writeText(window.NETC_CC); alert("Copied!"); }}>Copy Code</button>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.pu, marginBottom: 4 }}>TowBook Sync</div>
+      <div style={{ fontSize: 10, color: C.dm, marginBottom: 8 }}>The "🔄 Sync TowBook" button on the Schedule tab triggers the GitHub Actions sync workflow on demand. Enter your repo and a Personal Access Token (with <strong style={{ color: C.tx }}>Actions: write</strong> permission) below. These are saved to Supabase and shared across all users.</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div>
+          <div style={{ fontSize: 9, color: C.dm, marginBottom: 2, textTransform: "uppercase", letterSpacing: 1 }}>GitHub Repo (owner/repo)</div>
+          <input style={{ ...iS }} placeholder="e.g. netc-fleet-services/transport-scheduler" defaultValue={ghRepo}
+            onBlur={e => onSaveGH('github_repo', e.target.value.trim())} />
+        </div>
+        <div>
+          <div style={{ fontSize: 9, color: C.dm, marginBottom: 2, textTransform: "uppercase", letterSpacing: 1 }}>Personal Access Token</div>
+          <input style={{ ...iS }} type="password" placeholder="ghp_…" defaultValue={ghToken}
+            onBlur={e => onSaveGH('github_token', e.target.value.trim())} />
+        </div>
       </div>
     </div>
 
@@ -897,9 +901,7 @@ function App() {
   const [jobs,         setJobs]         = useState([]);
   const [viewDay,      setViewDay]      = useState(todayISO());
   const [showForm,     setShowForm]     = useState(false);
-  const [showImport,   setShowImport]   = useState(false);
-  const [impData,      setImpData]      = useState(null);
-  const [geoProg,      setGeoProg]      = useState(null);
+
   const [now,          setNow]          = useState(new Date());
   const [fp,           setFp]           = useState("");
   const [fd,           setFd]           = useState("");
@@ -908,6 +910,9 @@ function App() {
   const [reasonFilter,   setReasonFilter]   = useState(() => LS.get('filter', "EQUIPMENT TRANSPORT"));
   const [locationFilter, setLocationFilter] = useState("ALL");
   const [lastSynced,     setLastSynced]     = useState(null);
+  const [ghRepo,         setGhRepo]         = useState('');
+  const [ghToken,        setGhToken]        = useState('');
+  const [syncStatus,     setSyncStatus]     = useState(null); // null | 'triggering' | 'ok' | 'error'
   const [showOptimizer,  setShowOptimizer]  = useState(false);
   const [optState,       setOptState]       = useState(null);
   const [jobToasts,      setJobToasts]      = useState([]);
@@ -923,7 +928,7 @@ function App() {
   // ── Initial data load from Supabase ────────────
   useEffect(() => {
     (async () => {
-      let [fetchedJobs, fetchedYards, fetchedDrivers, fetchedHpd, fetchedStaffing, fetchedGeocache, fetchedLastSynced] = await Promise.all([
+      let [fetchedJobs, fetchedYards, fetchedDrivers, fetchedHpd, fetchedStaffing, fetchedGeocache, fetchedLastSynced, fetchedGHRepo, fetchedGHToken] = await Promise.all([
         db.loadAllJobs(),
         db.loadYards(),
         db.loadDrivers(),
@@ -931,11 +936,15 @@ function App() {
         db.loadSetting('staffing', {}),
         db.loadGeocache(),
         db.loadSetting('last_synced', null),
+        db.loadSetting('github_repo', ''),
+        db.loadSetting('github_token', ''),
       ]);
       // Populate the shared in-memory cache (pre-seeds are already in geoCache,
       // Object.assign keeps them and adds anything new from the DB)
       Object.assign(geoCache, fetchedGeocache);
       if (fetchedLastSynced) setLastSynced(fetchedLastSynced);
+      if (fetchedGHRepo)   setGhRepo(fetchedGHRepo);
+      if (fetchedGHToken)  setGhToken(fetchedGHToken);
 
       // Populate YARDS global first — closestYard() depends on it and is
       // called in the auto-assign blocks below.
@@ -1172,6 +1181,42 @@ function App() {
     });
   };
 
+  // ── Manual sync trigger ─────────────────────────
+  // Calls the GitHub Actions workflow_dispatch API so the user can run
+  // sync_calls.py on demand without waiting for the 15-minute cron.
+
+  const triggerSync = async () => {
+    if (!ghRepo || !ghToken) {
+      alert("Set your GitHub repo and token in Settings → TowBook Sync before triggering a manual sync.");
+      return;
+    }
+    setSyncStatus('triggering');
+    try {
+      const [owner, repo] = ghRepo.trim().split('/');
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/actions/workflows/sync-calls.yml/dispatches`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${ghToken.trim()}`, 'Accept': 'application/vnd.github+json' },
+          body: JSON.stringify({ ref: 'main' }),
+        }
+      );
+      if (res.status === 204) {
+        setSyncStatus('ok');
+        setTimeout(() => setSyncStatus(null), 5000);
+      } else {
+        const body = await res.json().catch(() => ({}));
+        setSyncStatus('error');
+        alert(`GitHub returned ${res.status}: ${body.message || 'unknown error'}`);
+        setTimeout(() => setSyncStatus(null), 5000);
+      }
+    } catch (e) {
+      setSyncStatus('error');
+      alert("Network error: " + e.message);
+      setTimeout(() => setSyncStatus(null), 5000);
+    }
+  };
+
   // ── CSV export ──────────────────────────────────
 
   const exportCSV = (jobList, filename) => {
@@ -1276,84 +1321,7 @@ function App() {
     setOptState(null);
   };
 
-  // ── TowBook import ──────────────────────────────
-
-  const existCN    = useMemo(() => { const m = {}; jobs.forEach(j => { if (j.tbCallNum) m[j.tbCallNum] = j; }); return m; }, [jobs]);
   const allReasons = useMemo(() => { const s = new Set(); jobs.forEach(j => { if (j.tbReason) s.add(j.tbReason); }); return ["ALL", ...[...s].sort()]; }, [jobs]);
-
-  const doImport = useCallback(async () => {
-    try {
-      const t    = await navigator.clipboard.readText();
-      const data = JSON.parse(t);
-      if (!Array.isArray(data) || !data.length) return alert("No jobs on clipboard.");
-
-      const geoA     = [];
-      data.forEach(d => { if (d.pickup) geoA.push(d.pickup); if (d.drop) geoA.push(d.drop); });
-      const uncached = geoA.filter(a => !geoCache[a]);
-      if (uncached.length > 0) {
-        setGeoProg({ done: 0, total: uncached.length });
-        setShowImport(true);
-        await batchGeo(geoA, (d, t) => setGeoProg({ done: d, total: t }));
-        setGeoProg(null);
-      } else {
-        setShowImport(true);
-      }
-
-      const enr = data.map(d => {
-        const existing = existCN[d.callNum];
-        const yard     = closestYard(d.pickup, d.pickupZip);
-        const jt       = jCalc(yard.addr, yard.zip, d.pickup, d.pickupZip, d.drop, d.dropZip);
-        const day      = tbToISO(d.scheduled) || todayISO();
-        let mid = 0;
-        if (d.driver) {
-          const dn    = d.driver.toLowerCase();
-          const match = drivers.find(dr => dn.indexOf(dr.name.split(' ')[1]?.toLowerCase()) > -1);
-          if (match) mid = match.id;
-        }
-        return { ...d, dup: !!existing, yard, jt, day, include: !existing, matchedDriverId: mid,
-          puName: d.pickup ? (geoCache[d.pickup]?.name || cityFrom(d.pickup)) : (lz(d.pickupZip)?.label || ""),
-          drName: d.drop   ? (geoCache[d.drop]?.name   || cityFrom(d.drop))   : (lz(d.dropZip)?.label   || "") };
-      });
-      setImpData(enr);
-    } catch(e) { alert("Clipboard error: " + e.message); setGeoProg(null); }
-  }, [existCN, drivers]);
-
-  const commitImport = () => {
-    if (!impData) return;
-    const add     = impData.filter(d => d.include && !d.dup && (d.pickupZip || d.dropZip));
-    const newCNs  = new Set(impData.map(d => d.callNum).filter(Boolean));
-    const impDays = new Set(impData.map(d => d.day));
-
-    const newJobs = add.map(d => ({
-      id: uid(), yardId: d.yard.id, driverId: d.matchedDriverId || 0,
-      pickupZip: d.pickupZip, dropZip: d.dropZip, pickupAddr: d.pickup || "",
-      dropAddr: d.drop || "", tbCallNum: d.callNum, tbDesc: d.desc,
-      tbScheduled: d.scheduled, tbReason: d.reason || "", tbDriver: d.driver || "",
-      priority: "normal", status: "scheduled", stops: [],
-      addedAt: new Date().toISOString(), day: d.day,
-    }));
-
-    // IDs of currently-scheduled jobs that are missing from this import (will be cancelled)
-    const cancelIds = jobs
-      .filter(j => j.tbCallNum && j.status === "scheduled" && impDays.has(j.day) && !newCNs.has(j.tbCallNum))
-      .map(j => j.id);
-
-    // Update local state
-    setJobs(prev => {
-      const up = prev.map(j => cancelIds.includes(j.id) ? { ...j, status: "cancelled" } : j);
-      return [...up, ...newJobs];
-    });
-
-    // Write to Supabase (fire and forget)
-    db.batchUpsertJobs(newJobs);
-    db.cancelJobs(cancelIds);
-
-    // Jump to the day with the most new jobs
-    const dc  = {}; add.forEach(d => { dc[d.day] = (dc[d.day] || 0) + 1; });
-    const top = Object.entries(dc).sort((a, b) => b[1] - a[1])[0];
-    if (top) setViewDay(top[0]);
-    setImpData(null); setShowImport(false);
-  };
 
   // ── Derived state ───────────────────────────────
 
@@ -1546,38 +1514,11 @@ function App() {
         </div>
       </div>}
 
-      {geoProg && <div style={{ ...cB, background: C.pd, borderColor: C.pu }}><div style={{ fontSize: 11, fontWeight: 700, color: C.pu }}>Geocoding… {geoProg.done}/{geoProg.total}</div></div>}
-
-      {showImport && impData && <div style={{ ...cB, background: "#1a1428", borderColor: C.pu, marginBottom: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.pu }}>TowBook Import</div>
-            <div style={{ fontSize: 10, color: C.dm }}><span style={{ color: C.gn }}>{impStats?.n} new</span>{impStats?.dp > 0 && <span style={{ marginLeft: 6 }}>{impStats.dp} exist</span>} · {fD(impStats?.h || 0)}</div>
-          </div>
-          <div style={{ display: "flex", gap: 4 }}>
-            <button style={{ ...bP, background: C.pu }} onClick={commitImport}>Import {impStats?.n}</button>
-            <button style={bSt} onClick={() => { setShowImport(false); setImpData(null); }}>Cancel</button>
-          </div>
-        </div>
-        <div style={{ fontSize: 9, color: C.am, marginBottom: 4 }}>Missing calls auto-cancelled on import.</div>
-        {Object.entries(impByDay).sort().map(([day, items]) => {
-          const nw = items.filter(d => d.include && !d.dup);
-          return <div key={day} style={{ marginBottom: 5 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.ac, marginBottom: 2 }}>{dayFull(day)} - {nw.length} new</div>
-            {items.slice(0, 8).map(d => <div key={d.oi} style={{ background: d.dup ? "transparent" : C.cd, border: "1px solid " + (d.dup ? "transparent" : C.bd), borderRadius: 4, padding: "3px 7px", marginBottom: 1, opacity: d.dup ? .3 : 1, display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
-              <span style={{ color: C.pu, fontWeight: 700, minWidth: 50 }}>{d.callNum}</span>
-              <span style={{ flex: 1, color: C.dm }}>{d.puName}→{d.drName}</span>
-              {d.reason && <span style={{ color: C.dm, background: C.sf, padding: "0 4px", borderRadius: 6, fontSize: 8 }}>{d.reason}</span>}
-              {d.driver && <span style={{ color: C.am, fontSize: 8 }}>{d.driver}</span>}
-              <span style={{ color: C.pu, fontWeight: 700 }}>{fH(d.jt.total)}</span>
-            </div>)}
-            {items.length > 8 && <div style={{ fontSize: 9, color: C.dm, padding: 2 }}>+{items.length - 8} more</div>}
-          </div>;
-        })}
-      </div>}
+      {syncStatus === 'ok'         && <div style={{ ...cB, background: C.gb, borderColor: C.gn, marginBottom: 6, fontSize: 11, color: C.gn, padding: "8px 12px" }}>✓ Sync triggered — new jobs will appear within 2 minutes.</div>}
+      {syncStatus === 'triggering' && <div style={{ ...cB, background: C.ab, borderColor: C.am, marginBottom: 6, fontSize: 11, color: C.am, padding: "8px 12px" }}>Triggering sync…</div>}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <button style={{ ...bSt, color: C.pu, borderColor: C.pu }} onClick={doImport}>📋 Import TowBook</button>
+        <button style={{ ...bSt, color: C.pu, borderColor: C.pu, opacity: syncStatus === 'triggering' ? 0.5 : 1 }} onClick={triggerSync} disabled={syncStatus === 'triggering'}>🔄 Sync TowBook</button>
         <div style={{ display: "flex", gap: 6 }}>
           {vJobs.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn }} onClick={() => exportCSV(vJobs, "schedule-" + viewDay + ".csv")}>⬇ CSV</button>}
           {vSch.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn }} onClick={runOptimizer}>⚡ Optimize Day</button>}
@@ -1613,7 +1554,7 @@ function App() {
       {vSch.map(j => <JobCard key={j.id} job={j} drivers={drivers} onUpdate={u => updJob(j.id, u)} onRemove={() => rmJob(j.id)} />)}
       {vDon.length > 0 && <div style={{ fontSize: 9, fontWeight: 700, color: C.gn, textTransform: "uppercase", letterSpacing: 1, marginTop: 5, marginBottom: 3 }}>Done ({vDon.length})</div>}
       {vDon.map(j => <JobCard key={j.id} job={j} drivers={drivers} onUpdate={u => updJob(j.id, u)} onRemove={() => rmJob(j.id)} />)}
-      {vJobs.length === 0 && !showForm && !showImport && <div style={{ ...cB, textAlign: "center", padding: 20, color: C.dm, fontSize: 11 }}>
+      {vJobs.length === 0 && !showForm && <div style={{ ...cB, textAlign: "center", padding: 20, color: C.dm, fontSize: 11 }}>
         {reasonFilter !== "ALL" ? "No " + reasonFilter + " jobs" : "No jobs"} for {dayFull(viewDay).toLowerCase()}
       </div>}
     </>}
@@ -1630,6 +1571,12 @@ function App() {
       hpd={hpd} onSetHpd={updateHpd}
       newDr={newDr} setNewDr={setNewDr}
       driverFunctions={DRIVER_FUNCTIONS}
+      ghRepo={ghRepo} ghToken={ghToken}
+      onSaveGH={(key, val) => {
+        if (key === 'github_repo') setGhRepo(val);
+        if (key === 'github_token') setGhToken(val);
+        db.saveSetting(key, val);
+      }}
     />}
 
     <div style={{ marginTop: 12, padding: "5px 0", borderTop: "1px solid " + C.bd, fontSize: 8, color: C.dm, display: "flex", justifyContent: "space-between" }}>
