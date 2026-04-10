@@ -202,9 +202,11 @@ def scrape_calls():
 def sync_to_supabase(tb_calls):
     now = datetime.now(timezone.utc).isoformat()
 
-    # Load ALL existing jobs (no status filter) to preserve dispatcher-managed fields
+    # Load ALL existing jobs (no status filter) to preserve all fields
     resp = sb.from_("jobs") \
-             .select("id, tb_call_num, yard_id, driver_id, status, priority, notes") \
+             .select("id, tb_call_num, tb_desc, tb_account, pickup_addr, drop_addr, "
+                     "pickup_zip, drop_zip, tb_scheduled, tb_reason, tb_driver, day, "
+                     "yard_id, driver_id, status, priority, notes, stops") \
              .execute()
 
     existing = {r["tb_call_num"]: r for r in (resp.data or []) if r.get("tb_call_num")}
@@ -215,29 +217,34 @@ def sync_to_supabase(tb_calls):
         cn = call["call_num"]
         ex = existing.get(cn)
 
+        def keep(new_val, field):
+            """Use the scraped value if non-empty, otherwise keep what's already in Supabase."""
+            return new_val if new_val else (ex.get(field) if ex else new_val)
+
         row = {
             "tb_call_num":  cn,
-            "tb_desc":      call["desc"],
-            "tb_account":   call["account"],
-            "pickup_addr":  call["pickup"],
-            "drop_addr":    call["drop"],
-            "pickup_zip":   call["pickup_zip"],
-            "drop_zip":     call["drop_zip"],
-            "tb_scheduled": call["scheduled"],
-            "tb_reason":    call["reason"],
-            "tb_driver":    call["driver"],
-            "day":          call["day"],
+            "tb_desc":      keep(call["desc"],      "tb_desc"),
+            "tb_account":   keep(call["account"],   "tb_account"),
+            "pickup_addr":  keep(call["pickup"],    "pickup_addr"),
+            "drop_addr":    keep(call["drop"],      "drop_addr"),
+            "pickup_zip":   keep(call["pickup_zip"],"pickup_zip"),
+            "drop_zip":     keep(call["drop_zip"],  "drop_zip"),
+            "tb_scheduled": keep(call["scheduled"], "tb_scheduled"),
+            "tb_reason":    keep(call["reason"],    "tb_reason"),
+            "tb_driver":    keep(call["driver"],    "tb_driver"),
+            "day":          keep(call["day"],       "day"),
             "updated_at":   now,
         }
 
         if ex:
-            # Existing record — carry forward dispatcher-managed fields
+            # Existing record — carry forward all dispatcher-managed fields
             row["id"]        = ex["id"]
             row["yard_id"]   = ex["yard_id"]
             row["driver_id"] = ex["driver_id"]
             row["status"]    = ex["status"]
             row["priority"]  = ex["priority"]
             row["notes"]     = ex.get("notes")
+            row["stops"]     = ex.get("stops") or []
         else:
             # New call — set defaults
             row["id"]       = str(uuid.uuid4())
