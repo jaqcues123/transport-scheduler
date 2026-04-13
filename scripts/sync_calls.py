@@ -95,15 +95,16 @@ def scrape_calls():
         # Login (same mechanism as sync_impounds.py)
         print("Logging into TowBook...")
         page.goto("https://app.towbook.com/Security/Login.aspx")
-        page.wait_for_selector("#Username", timeout=30_000)
+        page.wait_for_load_state("networkidle")
         page.evaluate(f'document.getElementById("Username").value = "{TOWBOOK_USER}"')
         page.evaluate(f'document.getElementById("Password").value = "{TOWBOOK_PASS}"')
         page.locator('button[name="bSignIn"]').click()
-        page.wait_for_url("**/DS4**", timeout=45_000)  # wait for redirect to complete
+        page.wait_for_load_state("networkidle")
 
         # Navigate to dispatch/calls page
         print(f"Navigating to {DISPATCH_URL}...")
         page.goto(DISPATCH_URL)
+        page.wait_for_load_state("networkidle")
 
         try:
             page.wait_for_selector("#atScheduled", timeout=15_000)
