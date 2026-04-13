@@ -99,15 +99,12 @@ def scrape_calls():
         page.evaluate(f'document.getElementById("Username").value = "{TOWBOOK_USER}"')
         page.evaluate(f'document.getElementById("Password").value = "{TOWBOOK_PASS}"')
         page.locator('button[name="bSignIn"]').click()
-        page.wait_for_selector("ul.tab-list", timeout=45_000)
+        page.wait_for_url("**/DS4**", timeout=45_000)  # wait for redirect to complete
 
         # Navigate to dispatch/calls page
         print(f"Navigating to {DISPATCH_URL}...")
         page.goto(DISPATCH_URL)
 
-        # Wait for the tab bar to be present, then click the Scheduled tab.
-        # All call categories load on the same URL; clicking a tab filters the
-        # visible rows via JavaScript without navigating away.
         try:
             page.wait_for_selector("#atScheduled", timeout=15_000)
         except Exception:
