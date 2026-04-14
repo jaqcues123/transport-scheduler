@@ -99,13 +99,22 @@ function sameZip(a, b) { return a && b && a.substring(0, 3) === b.substring(0, 3
 // ── Job Time / Distance Calculation ────────────
 // jCalc: compute leg-by-leg hours & miles for a job route.
 // Route: Yard → Pickup → [optional stops] → Drop → Yard
-// Speed assumption: 45 mph × 1.25 road factor (see geo.js dMi)
+//
+// Drive miles/hours preference:
+//   1. GraphHopper cache (real road routing, populated by ghRoute in geo.js)
+//   2. Fallback: haversine × 1.25 at 45 mph
+// Per-leg breakdown (m1/m2/m3, legs[]) always uses haversine since the cache
+// only stores totals. Load/unload time: 1h base + 30 min per extra stop.
 function jCalc(ya, yz, pa, pz, da, dz, stops) {
   var yc = crd(ya, yz), pc = crd(pa, pz), dc = crd(da, dz);
 
   if (!stops || stops.length === 0) {
     var m1 = dMi(yc, pc), m2 = dMi(pc, dc), m3 = dMi(dc, yc);
-    return { h1: m1/45, h2: m2/45, h3: m3/45, m1, m2, m3, total: m1/45 + m2/45 + m3/45 + 1, totalMi: m1 + m2 + m3, legs: null, luH: 1 };
+    var driveMi = m1 + m2 + m3;
+    var driveHr = driveMi / 45;
+    var gh = routeLookup([yc, pc, dc, yc]);
+    if (gh) { driveMi = gh.miles; driveHr = gh.hours; }
+    return { h1: m1/45, h2: m2/45, h3: m3/45, m1, m2, m3, total: driveHr + 1, totalMi: driveMi, legs: null, luH: 1, fromGH: !!gh };
   }
 
   // Multi-leg: build full point list
@@ -126,7 +135,13 @@ function jCalc(ya, yz, pa, pz, da, dz, stops) {
   var m1b = legs[0]?.mi || 0;
   var m2b = legs.length > 2 ? legs.slice(1, -1).reduce(function(s, l) { return s + l.mi; }, 0) : 0;
   var m3b = legs[legs.length - 1]?.mi || 0;
-  return { h1: m1b/45, h2: m2b/45, h3: m3b/45, m1: m1b, m2: m2b, m3: m3b, total: tm/45 + luH, totalMi: tm, legs, luH, multiLeg: true };
+
+  var driveMiM = tm;
+  var driveHrM = tm / 45;
+  var ghM = routeLookup(pts.map(function(p) { return p.c; }));
+  if (ghM) { driveMiM = ghM.miles; driveHrM = ghM.hours; }
+
+  return { h1: m1b/45, h2: m2b/45, h3: m3b/45, m1: m1b, m2: m2b, m3: m3b, total: driveHrM + luH, totalMi: driveMiM, legs, luH, multiLeg: true, fromGH: !!ghM };
 }
 
 // jobTotal: total hours for a job (handles multi-stop routes)
@@ -137,9 +152,12 @@ function jobTotal(j) {
   var pts = [crd(yd.addr, yd.zip), crd(j.pickupAddr, j.pickupZip)];
   stops.forEach(function(s) { pts.push(crd(s.addr, s.zip)); });
   pts.push(crd(j.dropAddr, j.dropZip), crd(yd.addr, yd.zip));
+  var luH = Math.max(1, 0.5 * stops.length + 1);
+  var gh = routeLookup(pts);
+  if (gh) return gh.hours + luH;
   var tm = 0;
   for (var i = 0; i < pts.length - 1; i++) tm += dMi(pts[i], pts[i + 1]);
-  return tm / 45 + Math.max(1, 0.5 * stops.length + 1);
+  return tm / 45 + luH;
 }
 
 // jobMiles: total driving miles for a job
@@ -148,11 +166,13 @@ function jobMiles(j) {
   var stops = j.stops || [];
   if (stops.length === 0) {
     var jt = jCalc(yd.addr, yd.zip, j.pickupAddr, j.pickupZip, j.dropAddr, j.dropZip);
-    return jt.m1 + jt.m2 + jt.m3;
+    return jt.totalMi;
   }
   var pts = [crd(yd.addr, yd.zip), crd(j.pickupAddr, j.pickupZip)];
   stops.forEach(function(s) { pts.push(crd(s.addr, s.zip)); });
   pts.push(crd(j.dropAddr, j.dropZip), crd(yd.addr, yd.zip));
+  var gh = routeLookup(pts);
+  if (gh) return gh.miles;
   var tm = 0;
   for (var i = 0; i < pts.length - 1; i++) tm += dMi(pts[i], pts[i + 1]);
   return tm;

@@ -8,6 +8,7 @@
 # Required repository secrets (Settings → Secrets → Actions):
 #   SUPABASE_URL       — from Supabase Dashboard → Settings → API
 #   SUPABASE_ANON_KEY  — from Supabase Dashboard → Settings → API
+#   GRAPHHOPPER_KEY    — from graphhopper.com (free tier API key)
 # ═══════════════════════════════════════════════
 
 name: Deploy to GitHub Pages
@@ -43,10 +44,12 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          GRAPHHOPPER_KEY: ${{ secrets.GRAPHHOPPER_KEY }}
         run: |
           cat > js/supabase-config.js << EOF
           window.SUPABASE_URL      = '${SUPABASE_URL}';
           window.SUPABASE_ANON_KEY = '${SUPABASE_ANON_KEY}';
+          window.GRAPHHOPPER_KEY   = '${GRAPHHOPPER_KEY}';
           EOF
 
       - name: Setup Pages

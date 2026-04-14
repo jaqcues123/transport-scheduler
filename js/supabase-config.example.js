@@ -17,3 +17,7 @@
 
 window.SUPABASE_URL      = 'https://YOUR_PROJECT_REF.supabase.co';
 window.SUPABASE_ANON_KEY = 'YOUR_ANON_KEY_HERE';
+
+// GraphHopper routing API key — used by ghRoute() in geo.js for real road
+// distances and toll detection. Free tier: graphhopper.com (500 req/day).
+window.GRAPHHOPPER_KEY   = 'YOUR_GRAPHHOPPER_KEY_HERE';
