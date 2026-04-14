@@ -126,17 +126,23 @@ function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
   allPts.push({ label: "Drop",                    addr: job.dropAddr, zip: job.dropZip, color: C.gn });
   allPts.push({ label: yard.short + " (return)",  addr: yard.addr, zip: yard.zip, color: C.dm });
 
-  // Calculate each leg
-  const legs = []; let totalMi = 0;
+  // Calculate each leg (haversine — for per-leg display only)
+  const legs = []; let havMi = 0;
+  const ptCoords = [];
   for (let i = 0; i < allPts.length - 1; i++) {
     const c1 = crd(allPts[i].addr, allPts[i].zip);
     const c2 = crd(allPts[i + 1].addr, allPts[i + 1].zip);
+    if (i === 0 && c1) ptCoords.push(c1);
+    if (c2) ptCoords.push(c2);
     const mi = dMi(c1, c2);
     legs.push({ mi, hr: mi / 45 });
-    totalMi += mi;
+    havMi += mi;
   }
-  const luH    = Math.max(1, 0.5 * stops.length + 1);
-  const totalH = totalMi / 45 + luH;
+  const luH = Math.max(1, 0.5 * stops.length + 1);
+  // Prefer GraphHopper cached totals; fall back to haversine.
+  const ghHit  = routeLookup(ptCoords);
+  const totalMi = ghHit ? ghHit.miles : havMi;
+  const totalH  = (ghHit ? ghHit.hours : havMi / 45) + luH;
 
   // cityFrom() parses "City, ST" directly from the address string — preferred over
   // geoCache.name which historically surfaced business/POI names from Nominatim.
@@ -151,6 +157,22 @@ function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
   const [newAddr,   setNewAddr]   = useState("");
   const [newZip,    setNewZip]    = useState("");
   const [newName,   setNewName]   = useState("");
+
+  // Toll detection via GraphHopper. Runs once per (route shape) — the
+  // routeCache absorbs repeats so this is effectively free after the first
+  // hit per unique yard→pickup→stops→drop pairing. Only writes back when
+  // the result differs from what's stored on the job.
+  useEffect(() => {
+    if (typeof ghRoute !== 'function') return;
+    const ptsCoords = allPts.map(p => crd(p.addr, p.zip)).filter(Boolean);
+    if (ptsCoords.length < 2) return;
+    let cancelled = false;
+    ghRoute(ptsCoords).then(r => {
+      if (cancelled || !r) return;
+      if (r.hasTolls !== (job.hasTolls === true)) onUpdate({ hasTolls: r.hasTolls });
+    });
+    return () => { cancelled = true; };
+  }, [job.pickupAddr, job.pickupZip, job.dropAddr, job.dropZip, job.yardId, JSON.stringify(stops)]);
 
   const ptNames = [yard.short, puN, ...stops.map((s, i) => s.name || cityFrom(s.addr) || (lz(s.zip)?.label) || ("Stop " + (i + 1))), drN, yard.short];
 
@@ -176,6 +198,7 @@ function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
         {job.tbDesc    && <span style={{ fontSize: 10, fontWeight: 600, color: C.tx, background: C.sf, padding: "1px 6px", borderRadius: 10 }}>{job.tbDesc.trim()}</span>}
         {job.tbReason  && <span style={{ fontSize: 9, color: C.dm, background: C.sf, padding: "1px 6px", borderRadius: 10 }}>{job.tbReason}</span>}
         {stops.length > 0 && <span style={{ fontSize: 8, color: C.am, background: C.ab, padding: "1px 5px", borderRadius: 8, fontWeight: 700 }}>{stops.length + 2} STOPS</span>}
+        {job.hasTolls && <span title="Route has toll roads" style={{ fontSize: 9, fontWeight: 700, color: "#ffd966", background: "#3b2f11", padding: "1px 5px", borderRadius: 8 }}>💰 TOLLS</span>}
         {job.status === "active"    && <span style={{ fontSize: 8, fontWeight: 700, padding: "2px 5px", borderRadius: 3, background: C.ab, color: C.am, animation: "pulse 2s infinite" }}>ACTIVE</span>}
         {job.status === "complete"  && <span style={{ fontSize: 8, fontWeight: 700, padding: "2px 5px", borderRadius: 3, background: C.gb, color: C.gn }}>DONE</span>}
         {job.status === "cancelled" && <span style={{ fontSize: 8, fontWeight: 700, padding: "2px 5px", borderRadius: 3, background: "#3b1111", color: C.rd }}>CANCELLED</span>}
@@ -1222,13 +1245,14 @@ function App() {
   // ── Initial data load from Supabase ────────────
   useEffect(() => {
     (async () => {
-      let [fetchedJobs, fetchedYards, fetchedDrivers, fetchedHpd, fetchedStaffing, fetchedGeocache, fetchedLastSynced, fetchedGHRepo, fetchedGHToken] = await Promise.all([
+      let [fetchedJobs, fetchedYards, fetchedDrivers, fetchedHpd, fetchedStaffing, fetchedGeocache, fetchedRouteCache, fetchedLastSynced, fetchedGHRepo, fetchedGHToken] = await Promise.all([
         db.loadAllJobs(),
         db.loadYards(),
         db.loadDrivers(),
         db.loadSetting('hpd', 8),
         db.loadSetting('staffing', {}),
         db.loadGeocache(),
+        db.loadRouteCache(),
         db.loadSetting('last_synced', null),
         db.loadSetting('github_repo', ''),
         db.loadSetting('github_token', ''),
@@ -1236,6 +1260,7 @@ function App() {
       // Populate the shared in-memory cache (pre-seeds are already in geoCache,
       // Object.assign keeps them and adds anything new from the DB)
       Object.assign(geoCache, fetchedGeocache);
+      Object.assign(routeCache, fetchedRouteCache);
       if (fetchedLastSynced) setLastSynced(fetchedLastSynced);
       if (fetchedGHRepo)   setGhRepo(fetchedGHRepo);
       if (fetchedGHToken)  setGhToken(fetchedGHToken);

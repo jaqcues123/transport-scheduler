@@ -38,6 +38,7 @@ function jobToDB(j) {
     stops:        j.stops        || [],
     started_at:   j.startedAt    || null,
     completed_at: j.completedAt  || null,
+    has_tolls:    j.hasTolls     === true,
     added_at:     j.addedAt      || new Date().toISOString(),
     updated_at:   new Date().toISOString(),
   };
@@ -70,6 +71,7 @@ function jobToApp(row) {
     stops:        row.stops         || [],
     startedAt:    row.started_at,
     completedAt:  row.completed_at,
+    hasTolls:     row.has_tolls === true,
     addedAt:      row.added_at,
   };
 }
@@ -182,6 +184,37 @@ var db = {
       .upsert({ addr: addr, lat: result.lat, lon: result.lon, name: result.name || null },
                { onConflict: 'addr' });
     if (error) console.error('db.saveGeocode:', error);
+  },
+
+  // ── Route cache ──────────────────────────────
+  // Shared GraphHopper result cache. Key = pipe-joined rounded coord pairs
+  // (see routeKey() in geo.js). Bulk-loaded at startup into routeCache.
+
+  async loadRouteCache() {
+    var { data, error } = await sb.from('route_cache').select('*');
+    if (error) { console.error('db.loadRouteCache:', error); return {}; }
+    var cache = {};
+    (data || []).forEach(function(row) {
+      cache[row.key] = {
+        miles:        row.miles,
+        hours:        row.hours,
+        hasTolls:     row.has_tolls === true,
+        tollSegments: row.toll_segments || [],
+      };
+    });
+    return cache;
+  },
+
+  async saveRoute(key, result) {
+    var { error } = await sb.from('route_cache')
+      .upsert({
+        key:           key,
+        miles:         result.miles,
+        hours:         result.hours,
+        has_tolls:     result.hasTolls === true,
+        toll_segments: result.tollSegments || [],
+      }, { onConflict: 'key' });
+    if (error) console.error('db.saveRoute:', error);
   },
 
   // ── Settings ─────────────────────────────────

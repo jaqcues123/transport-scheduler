@@ -239,6 +239,90 @@ function dMi(c1, c2) {
   return hav(c1.lat, c1.lon, c2.lat, c2.lon) * 1.25;
 }
 
+// ── GraphHopper Routing ─────────────────────────
+// Real road routing with toll detection. Returns { miles, hours, hasTolls,
+// tollSegments } for an ordered list of {lat,lon} points (yard → pickup →
+// stops → drop → yard). Falls back to null if the API key is missing or the
+// request fails — callers should fall back to dMi() haversine math.
+//
+// Two-tier cache, keyed by coords rounded to 4 decimals (~36ft):
+//   1. routeCache (in-memory)            — instant, lost on reload
+//   2. localStorage 'ghRouteCache'       — survives reload, per-browser
+// Supabase persistence is added in db.js (loadRouteCache / saveRoute) so the
+// cache is shared across all users.
+var routeCache = {};
+try {
+  var stored = localStorage.getItem('ghRouteCache');
+  if (stored) routeCache = JSON.parse(stored) || {};
+} catch (e) {}
+
+function routeKey(points) {
+  return points.map(function(p) {
+    return p.lat.toFixed(4) + ',' + p.lon.toFixed(4);
+  }).join('|');
+}
+
+// Sync cache hit check — used by jCalc/jobMiles/jobTotal/JobCard to swap in
+// real GraphHopper miles/hours without awaiting a network call. Returns
+// { miles, hours, hasTolls } or null. The async ghRoute() runs separately
+// (from JobCard's useEffect) to populate the cache on misses.
+function routeLookup(points) {
+  if (!points || points.length < 2) return null;
+  for (var i = 0; i < points.length; i++) {
+    if (!points[i] || points[i].lat == null || points[i].lon == null) return null;
+  }
+  return routeCache[routeKey(points)] || null;
+}
+
+async function ghRoute(points) {
+  if (!points || points.length < 2) return null;
+  if (!window.GRAPHHOPPER_KEY) return null;
+  for (var i = 0; i < points.length; i++) {
+    if (!points[i] || points[i].lat == null || points[i].lon == null) return null;
+  }
+
+  var key = routeKey(points);
+  if (routeCache[key]) return routeCache[key];
+
+  var qs = points.map(function(p) {
+    return 'point=' + p.lat.toFixed(6) + ',' + p.lon.toFixed(6);
+  }).join('&');
+  // calc_points must stay true: details=toll returns segments as indices
+  // into the points array, so disabling points kills toll detection.
+  // points_encoded=true keeps the response small (encoded polyline string).
+  var url = 'https://graphhopper.com/api/1/route?' + qs +
+    '&vehicle=car&locale=en&points_encoded=true&details=toll&key=' +
+    encodeURIComponent(window.GRAPHHOPPER_KEY);
+
+  try {
+    var r = await fetch(url);
+    if (!r.ok) return null;
+    var d = await r.json();
+    var path = d && d.paths && d.paths[0];
+    if (!path) return null;
+
+    // details.toll is an array of [fromIdx, toIdx, value] segments where
+    // value is "all" | "hgv" | "no". Any non-"no" segment means the route
+    // crosses a toll road.
+    var tollSegs = (path.details && path.details.toll) || [];
+    var hasTolls = tollSegs.some(function(s) { return s[2] && s[2] !== 'no'; });
+
+    var result = {
+      miles:    path.distance / 1609.344,
+      hours:    path.time / 3600000,
+      hasTolls: hasTolls,
+      tollSegments: tollSegs,
+    };
+
+    routeCache[key] = result;
+    try { localStorage.setItem('ghRouteCache', JSON.stringify(routeCache)); } catch (e) {}
+    if (typeof db !== 'undefined' && db.saveRoute) db.saveRoute(key, result);
+    return result;
+  } catch (e) {
+    return null;
+  }
+}
+
 // ── Yard Helpers ────────────────────────────────
 function yCrd(y) { return crd(y.addr, y.zip); }
 
