@@ -4,3 +4,6 @@ js/supabase-config.js
 
 # Local environment variables for running sync scripts manually.
 .env.local
+
+# Virtual environment for Python dependencies.
+.venv
