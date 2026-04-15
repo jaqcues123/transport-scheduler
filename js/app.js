@@ -157,11 +157,13 @@ function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
   const [newAddr,   setNewAddr]   = useState("");
   const [newZip,    setNewZip]    = useState("");
   const [newName,   setNewName]   = useState("");
+  // Bumped whenever a GH result lands so routeLookup() re-runs and picks up real distances.
+  const [ghVersion, setGhVersion] = useState(0);
 
-  // Toll detection via GraphHopper. Runs once per (route shape) — the
-  // routeCache absorbs repeats so this is effectively free after the first
-  // hit per unique yard→pickup→stops→drop pairing. Only writes back when
-  // the result differs from what's stored on the job.
+  // Toll detection + real road distances via GraphHopper. Runs once per route
+  // shape — routeCache absorbs repeats after the first hit. Forces a local
+  // re-render so routeLookup() can return the cached GH result for all routes
+  // (not just toll routes where onUpdate fires naturally).
   useEffect(() => {
     if (typeof ghRoute !== 'function') return;
     const ptsCoords = allPts.map(p => crd(p.addr, p.zip)).filter(Boolean);
@@ -169,6 +171,7 @@ function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
     let cancelled = false;
     ghRoute(ptsCoords).then(r => {
       if (cancelled || !r) return;
+      setGhVersion(v => v + 1); // re-render so routeLookup picks up cached GH result
       if (r.hasTolls !== (job.hasTolls === true)) onUpdate({ hasTolls: r.hasTolls });
     });
     return () => { cancelled = true; };
@@ -1692,9 +1695,9 @@ function App() {
     });
   };
 
+  // Jobs are never hard-deleted — set cancelled so they stay in history.
   const rmJob = (id) => {
-    setJobs(prev => prev.filter(j => j.id !== id));
-    db.deleteJob(id);
+    updJob(id, { status: "cancelled" });
   };
 
   // ── Driver operations ───────────────────────────
@@ -1901,7 +1904,7 @@ function App() {
 
   const calDays   = useMemo(() => {
     const base = new Set(genDays(21));
-    jobs.forEach(j => { if (j.day && j.status !== "cancelled") base.add(j.day); });
+    jobs.forEach(j => { if (j.day) base.add(j.day); });
     return [...base].sort();
   }, [jobs]);
   const filt      = (arr) => {
@@ -1941,6 +1944,8 @@ function App() {
   const vAct  = vJobs.filter(j => j.status === "active");
   const vSch  = vJobs.filter(j => j.status === "scheduled");
   const vDon  = vJobs.filter(j => j.status === "complete");
+  // Cancelled jobs for this day — shown at the bottom of schedule, excluded from capacity math
+  const vCan  = jobs.filter(j => j.day === viewDay && j.status === "cancelled");
   const stCol = vs.pct >= 90 ? C.rd : vs.pct >= 75 ? C.am : C.gn;
 
   const stacks = React.useMemo(() => {
@@ -2121,6 +2126,8 @@ function App() {
       {vJobs.length === 0 && !showForm && <div style={{ ...cB, textAlign: "center", padding: 20, color: C.dm, fontSize: 11 }}>
         {!reasonFilter.has("ALL") ? "No " + [...reasonFilter].join(", ") + " jobs" : "No jobs"} for {dayFull(viewDay).toLowerCase()}
       </div>}
+      {vCan.length > 0 && <div style={{ fontSize: 9, fontWeight: 700, color: "#7f1d1d", textTransform: "uppercase", letterSpacing: 1, marginTop: 8, marginBottom: 3 }}>Cancelled ({vCan.length})</div>}
+      {vCan.map(j => <JobCard key={j.id} job={j} drivers={drivers} onUpdate={u => updJob(j.id, u)} onRemove={() => {}} onDayChange={setViewDay} />)}
     </>}
 
     {tab === "drivers"  && <DriversTab jobs={jobs.filter(j => j.status !== "cancelled")} drivers={drivers} viewDay={viewDay} hpd={hpd} onExportCSV={exportCSV} />}
