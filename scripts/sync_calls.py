@@ -220,6 +220,7 @@ def scrape_tab(page, tab_id, tab_name):
                 'driver':     driver,
                 'truck':      truck,
                 'day':        day,
+                'source_tab': tab_name,
             })
 
     return calls
@@ -329,13 +330,17 @@ def sync_to_supabase(tb_calls):
             "updated_at":   now,
         }
 
+        # Jobs from the Active tab are in-progress in TowBook — mark them active.
+        # Scheduled and Current tabs preserve existing status (or default to scheduled).
+        is_active = call.get("source_tab") == "Active"
+
         if ex:
             # Existing record — carry forward all dispatcher-managed fields
             row["id"]        = ex["id"]
             row["added_at"]  = ex["added_at"]
             row["yard_id"]   = ex["yard_id"]
             row["driver_id"] = ex["driver_id"]
-            row["status"]    = ex["status"]
+            row["status"]    = "active" if is_active else ex["status"]
             row["priority"]  = ex["priority"]
             row["notes"]     = ex.get("notes")
             row["stops"]     = ex.get("stops") or []
@@ -343,7 +348,7 @@ def sync_to_supabase(tb_calls):
             # New call — set defaults
             row["id"]       = str(uuid.uuid4())
             row["priority"] = "normal"
-            row["status"]   = "scheduled"
+            row["status"]   = "active" if is_active else "scheduled"
             row["stops"]    = []
             row["added_at"] = now
 

@@ -456,11 +456,139 @@ function DriversTab({ jobs, drivers, viewDay, hpd, onExportCSV }) {
   </div>;
 }
 
+// ── JobDetailModal ───────────────────────────────
+// Read-only full detail view for a historical job. Mirrors JobCard layout
+// but omits status controls, stop editor, and date override.
+function JobDetailModal({ job, drivers, onClose }) {
+  const yard  = YARDS.find(y => y.id === job.yardId) || YARDS[0] || { short: "?", addr: "", zip: "" };
+  const stops = job.stops || [];
+
+  const allPts = [];
+  allPts.push({ label: yard.short + " (yard)",   addr: yard.addr,      zip: yard.zip,      color: C.dm });
+  allPts.push({ label: "Pickup",                  addr: job.pickupAddr, zip: job.pickupZip, color: C.ac });
+  stops.forEach((s, i) => allPts.push({ label: s.name || ("Stop " + (i + 1)), addr: s.addr || "", zip: s.zip || "", color: C.am }));
+  allPts.push({ label: "Drop",                    addr: job.dropAddr,   zip: job.dropZip,   color: C.gn });
+  allPts.push({ label: yard.short + " (return)",  addr: yard.addr,      zip: yard.zip,      color: C.dm });
+
+  const legs = []; let totalMi = 0;
+  for (let i = 0; i < allPts.length - 1; i++) {
+    const c1 = crd(allPts[i].addr, allPts[i].zip);
+    const c2 = crd(allPts[i + 1].addr, allPts[i + 1].zip);
+    const mi = dMi(c1, c2);
+    legs.push({ mi, hr: mi / 45 });
+    totalMi += mi;
+  }
+  const luH    = Math.max(1, 0.5 * stops.length + 1);
+  const totalH = totalMi / 45 + luH;
+
+  const puN = job.pickupAddr ? (cityFrom(job.pickupAddr) || lz(job.pickupZip)?.label || job.pickupZip || "?") : (lz(job.pickupZip)?.label || job.pickupZip || "?");
+  const drN = job.dropAddr   ? (cityFrom(job.dropAddr)   || lz(job.dropZip)?.label   || job.dropZip   || "?") : (lz(job.dropZip)?.label   || job.dropZip   || "?");
+  const ptNames = [yard.short, puN, ...stops.map((s, i) => s.name || cityFrom(s.addr) || lz(s.zip)?.label || ("Stop " + (i + 1))), drN, yard.short];
+
+  const driverName = drivers.find(d => d.id === job.driverId)?.name || "Unassigned";
+  const actualH = (job.startedAt && job.completedAt)
+    ? (new Date(job.completedAt) - new Date(job.startedAt)) / 3600000
+    : null;
+  const pri = job.priority || "normal";
+  const bc  = job.status === "complete" ? C.gn : job.status === "active" ? C.am : C.ac;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+      onClick={onClose}>
+      <div style={{ ...cB, width: "100%", maxWidth: 480, maxHeight: "85vh", overflowY: "auto", padding: 14, borderLeft: "3px solid " + bc }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <div className="pri" style={{ background: PRI_COLORS[pri] }} title={pri} />
+            {job.tbCallNum && <span style={{ fontSize: 15, fontWeight: 800, color: C.pu }}>{job.tbCallNum}</span>}
+            {job.tbAccount && <span style={{ fontSize: 12, fontWeight: 700, color: C.ac }}>{job.tbAccount}</span>}
+            {job.tbDesc    && <span style={{ fontSize: 10, color: C.tx, background: C.sf, padding: "1px 6px", borderRadius: 10 }}>{job.tbDesc.trim()}</span>}
+            {job.tbReason  && <span style={{ fontSize: 9, color: C.dm, background: C.sf, padding: "1px 6px", borderRadius: 10 }}>{job.tbReason}</span>}
+            {job.status === "complete" && <span style={{ fontSize: 8, fontWeight: 700, padding: "2px 5px", borderRadius: 3, background: C.gb, color: C.gn }}>DONE</span>}
+            {job.status === "active"   && <span style={{ fontSize: 8, fontWeight: 700, padding: "2px 5px", borderRadius: 3, background: C.ab, color: C.am }}>ACTIVE</span>}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: C.ac }}>{fH(totalH)}</div>
+              <div style={{ fontSize: 8, color: C.dm }}>{fMi(totalMi)}</div>
+            </div>
+            <button style={bSt} onClick={onClose}>✕</button>
+          </div>
+        </div>
+
+        {/* Scheduled time */}
+        {job.tbScheduled && <div style={{ fontSize: 12, fontWeight: 600, color: C.tx, marginBottom: 6 }}>{job.tbScheduled}</div>}
+
+        {/* Driver / Yard / Priority — read-only */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 8, fontSize: 10 }}>
+          <div><span style={{ color: C.dm }}>Yard: </span><strong>{yard.short}</strong></div>
+          <div><span style={{ color: C.dm }}>Driver: </span><strong style={{ color: C.ac }}>{driverName}</strong></div>
+          <div><span style={{ color: C.dm }}>Priority: </span><strong>{pri}</strong></div>
+        </div>
+        {job.tbDriver && <div style={{ fontSize: 10, color: C.dm, marginBottom: 6 }}>TB Driver: <strong style={{ color: C.am }}>{job.tbDriver}</strong></div>}
+
+        {/* Route legs */}
+        <div style={{ padding: "0 0 0 2px", marginBottom: 8 }}>
+          {allPts.map((pt, i) => {
+            const isLast = i === allPts.length - 1;
+            const leg    = i < legs.length ? legs[i] : null;
+            const dot    = isLast ? "A" : String.fromCharCode(65 + (i > allPts.length - 2 ? 0 : i));
+            return <React.Fragment key={i}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0" }}>
+                <div style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid " + pt.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 7, fontWeight: 700, color: pt.color, flexShrink: 0 }}>{dot}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: C.tx, flex: 1 }}>{ptNames[i]}</div>
+                {!isLast && i > 0 && i < allPts.length - 2 && <div style={{ fontSize: 8, color: C.am }}>+30m</div>}
+                {i === 1 && stops.length === 0 && <div style={{ fontSize: 8, color: C.am }}>+1h load</div>}
+              </div>
+              {!isLast && leg && <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ width: 14, display: "flex", justifyContent: "center" }}><div style={{ width: 2, height: 16, background: C.bd }} /></div>
+                <span style={{ fontSize: 10, color: leg.hr > 0 ? C.ac : C.rd, fontWeight: 700 }}>{leg.hr > 0 ? fH(leg.hr) : "? no zip"}</span>
+                {leg.mi > 0 && <span style={{ fontSize: 9, color: C.dm }}>{fMi(leg.mi)}</span>}
+              </div>}
+            </React.Fragment>;
+          })}
+          <div style={{ fontSize: 9, color: C.am, marginTop: 2 }}>Load/unload: {fH(luH)}</div>
+        </div>
+
+        {/* Stops list — read-only */}
+        {stops.length > 0 && <div style={{ marginBottom: 8, padding: 8, background: C.sf, borderRadius: 6, border: "1px solid " + C.bd }}>
+          <div style={{ fontSize: 9, color: C.dm, marginBottom: 4, fontWeight: 600 }}>STOPS</div>
+          {stops.map((s, i) => <div key={i} style={{ fontSize: 10, color: C.tx, marginBottom: 2 }}>
+            <span style={{ color: C.am, fontWeight: 800, marginRight: 6 }}>S{i + 1}</span>
+            {s.name && <span style={{ fontWeight: 600, marginRight: 4 }}>{s.name}</span>}
+            {s.addr} {s.zip && <span style={{ color: C.ac }}>({s.zip})</span>}
+          </div>)}
+        </div>}
+
+        {/* Timing */}
+        <div style={{ borderTop: "1px solid " + C.bd, paddingTop: 8, fontSize: 10 }}>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
+            <span style={{ color: C.dm }}>Est: <strong style={{ color: C.am }}>{isFinite(totalH) ? fH(totalH) : "--"}</strong></span>
+            {actualH != null && <span style={{ color: C.dm }}>Actual: <strong style={{ color: C.gn }}>{fH(actualH)}</strong></span>}
+            {actualH != null && isFinite(totalH) && (() => {
+              const diff = actualH - totalH;
+              return <span style={{ color: diff > 0 ? C.rd : C.gn, fontWeight: 700 }}>{diff > 0 ? "+" : ""}{fH(Math.abs(diff))} {diff > 0 ? "over" : "under"}</span>;
+            })()}
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", color: C.dm }}>
+            {job.startedAt   && <span>Started: <strong style={{ color: C.tx }}>{fT(job.startedAt)}</strong></span>}
+            {job.completedAt && <span>Done: <strong style={{ color: C.tx }}>{fT(job.completedAt)}</strong></span>}
+          </div>
+          {job.notes && <div style={{ marginTop: 6, padding: "6px 8px", background: C.sf, borderRadius: 4, fontSize: 10, color: C.tx }}>{job.notes}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── HistoryTab ──────────────────────────────────
 // Shows completed jobs for the past 7 days with estimated vs actual time.
 // Includes a CSV download for comparison reporting.
 function HistoryTab({ jobs, drivers }) {
-  const [histDay, setHistDay] = React.useState(null);
+  const [histDay,     setHistDay]     = React.useState(null);
+  const [detailJob,   setDetailJob]   = React.useState(null);
 
   // Build list of past days (last 7 days excluding today)
   const pastDays = React.useMemo(() => {
@@ -560,7 +688,7 @@ function HistoryTab({ jobs, drivers }) {
         const est = jobTotal(j);
         const act = actualH(j);
         const diff = (act != null && isFinite(est)) ? act - est : null;
-        return <div key={j.id} style={{ ...cB, padding: "10px 12px", marginBottom: 5 }}>
+        return <div key={j.id} style={{ ...cB, padding: "10px 12px", marginBottom: 5, cursor: "pointer" }} onClick={() => setDetailJob(j)}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
             <div>
               {j.tbCallNum && <span style={{ fontSize: 14, fontWeight: 800, color: C.pu, marginRight: 8 }}>{j.tbCallNum}</span>}
@@ -586,7 +714,7 @@ function HistoryTab({ jobs, drivers }) {
     {/* Incomplete jobs (scheduled/active that didn't get marked done) */}
     {incomplete.length > 0 && <>
       <div style={{ fontSize: 9, fontWeight: 700, color: C.am, textTransform: "uppercase", letterSpacing: 1, marginTop: 10, marginBottom: 4 }}>Not Completed ({incomplete.length})</div>
-      {incomplete.map(j => <div key={j.id} style={{ ...cB, padding: "10px 12px", marginBottom: 5, opacity: 0.65 }}>
+      {incomplete.map(j => <div key={j.id} style={{ ...cB, padding: "10px 12px", marginBottom: 5, opacity: 0.65, cursor: "pointer" }} onClick={() => setDetailJob(j)}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             {j.tbCallNum && <span style={{ fontSize: 13, fontWeight: 800, color: C.pu, marginRight: 8 }}>{j.tbCallNum}</span>}
@@ -599,6 +727,8 @@ function HistoryTab({ jobs, drivers }) {
     </>}
 
     {dayJobs.length === 0 && <div style={{ ...cB, textAlign: "center", padding: 20, color: C.dm, fontSize: 11 }}>No jobs recorded for this day.</div>}
+
+    {detailJob && <JobDetailModal job={detailJob} drivers={drivers} onClose={() => setDetailJob(null)} />}
   </div>;
 }
 
@@ -1132,6 +1262,22 @@ function OptimizerModal({ state, drivers, onUpdate, onApply, onClose }) {
   );
 }
 
+// ── Driver name helpers ──────────────────────────
+// Shared token similarity — used for "closest match" suggestion display only,
+// never for automatic assignment.
+function nameSimilarity(a, b) {
+  const ta = new Set(a.toLowerCase().split(/\s+/));
+  const tb = new Set(b.toLowerCase().split(/\s+/));
+  const shared = [...ta].filter(t => tb.has(t)).length;
+  return shared / Math.max(ta.size + tb.size - shared, 1);
+}
+function closestDriver(tbName, pool) {
+  return pool.reduce((best, dr) => {
+    const score = nameSimilarity(dr.name, tbName);
+    return score > best.score ? { dr, score } : best;
+  }, { dr: null, score: 0 }).dr;
+}
+
 // ── findPossibleStacks ───────────────────────────
 // For each scheduled job A with a drop location, find other scheduled
 // jobs B whose pickup is within `maxMi` of A's drop — i.e. jobs the
@@ -1233,30 +1379,49 @@ function PossibleStackingModal({ data, radius, onRadiusChange, onClose, onIgnore
   );
 }
 
-// ── NewJobToast ──────────────────────────────────
-// Bottom-right toast shown when a new job's pickup is near
-// an existing driver's last drop — signals a potential stack.
-function NewJobToast({ toasts, onDismiss }) {
-  if (!toasts.length) return null;
+// ── NewStackModal ────────────────────────────────
+// Centered modal queue shown after a sync when a newly imported job has a
+// stacking opportunity. One pair at a time — user clicks Dismiss or Ignore.
+// Dismiss: closes this notification but the pair still appears in the button view.
+// Ignore:  closes and also adds the pair to ignoredStacks (hidden from button view too).
+function NewStackModal({ queue, onDismiss, onIgnore }) {
+  if (!queue.length) return null;
+  const m = queue[0];
   return (
-    <div style={{ position:'fixed', bottom:20, right:20, zIndex:900, display:'flex', flexDirection:'column', gap:8, maxWidth:300 }}>
-      {toasts.map(t => (
-        <div key={t.id} style={{ background:C.cd, border:'1px solid '+C.am, borderRadius:8, padding:'10px 12px', boxShadow:'0 4px 16px rgba(0,0,0,0.5)' }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
-            <span style={{ fontSize:11, fontWeight:700, color:C.am }}>Potential stack</span>
-            <button style={{ ...bSt, padding:'0 5px', fontSize:10 }} onClick={() => onDismiss(t.id)}>✕</button>
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.7)', zIndex:950, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ ...cB, width:'100%', maxWidth:460, padding:18, background:C.cd, borderColor:C.am }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+          <div>
+            <div style={{ fontSize:13, fontWeight:800, color:C.am }}>🔗 New Stacking Opportunity</div>
+            <div style={{ fontSize:10, color:C.dm, marginTop:2 }}>Detected on the most recent sync · {queue.length} remaining</div>
           </div>
-          <div style={{ fontSize:12, fontWeight:800, color:C.pu, marginBottom:2 }}>{t.job.tbCallNum}{t.job.tbAccount ? ' · '+t.job.tbAccount : ''}</div>
-          <div style={{ fontSize:10, color:C.dm, marginBottom:6 }}>
-            Pickup: {cityFrom(t.job.pickupAddr) || lz(t.job.pickupZip)?.label || t.job.pickupZip || '?'}
-          </div>
-          {t.matches.map((m, i) => (
-            <div key={i} style={{ fontSize:10, color:C.tx, background:C.sf, borderRadius:4, padding:'3px 6px', marginBottom:2 }}>
-              {Math.round(m.dist)}mi from <strong>{m.driver.name}</strong>'s drop on {m.nearJob.tbCallNum || 'job'}
-            </div>
-          ))}
         </div>
-      ))}
+
+        <div style={{ border:'1px solid '+C.bd, borderRadius:6, padding:10, background:C.sf, marginBottom:14 }}>
+          <div style={{ fontSize:12, fontWeight:800, color:C.am, marginBottom:6 }}>{Math.round(m.dist)} mi apart</div>
+          <div style={{ fontSize:11, color:C.tx, marginBottom:4 }}>
+            <span style={{ color:C.pu, fontWeight:800 }}>{m.a.tbCallNum || '?'}</span>
+            <span style={{ color:C.dm }}> drops in </span>
+            <strong>{cityFrom(m.a.dropAddr) || lz(m.a.dropZip)?.label || '?'}</strong>
+            {m.aDriver && <span style={{ color:C.dm }}> · {m.aDriver.name}</span>}
+          </div>
+          <div style={{ fontSize:11, color:C.tx }}>
+            <span style={{ color:C.pu, fontWeight:800 }}>{m.b.tbCallNum || '?'}</span>
+            <span style={{ color:C.dm }}> picks up in </span>
+            <strong>{m.city}</strong>
+            {m.bDriver && <span style={{ color:C.dm }}> · {m.bDriver.name}</span>}
+          </div>
+        </div>
+
+        <div style={{ display:'flex', gap:8 }}>
+          <button style={{ ...bSt, flex:1, fontSize:11 }} onClick={onDismiss}>
+            Dismiss
+          </button>
+          <button style={{ ...bSt, flex:1, fontSize:11, color:C.dm, borderColor:C.bd }} onClick={onIgnore}>
+            Ignore permanently
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1294,18 +1459,22 @@ function App() {
   const [showOptimizer,  setShowOptimizer]  = useState(false);
   const [optState,       setOptState]       = useState(null);
   const [driverMatchQueue, setDriverMatchQueue] = useState([]); // [{tbName, callNums, suggested}]
-  const [jobToasts,      setJobToasts]      = useState([]);
+  const [newStackQueue,  setNewStackQueue]  = useState([]); // [{a,b,dist,aDriver,bDriver,city}] — new-job stacks only
   const [showStacking,   setShowStacking]   = useState(false);
   const [stackRadius,    setStackRadius]    = useState(15);
   const [ignoredStacks,  setIgnoredStacks]  = useState(() => new Set());
 
   // Refs so Realtime callbacks (which close over initial state) always see current values
-  const jobsRef    = React.useRef([]);
-  const driversRef = React.useRef([]);
-  const viewDayRef = React.useRef(viewDay);
-  useEffect(() => { jobsRef.current    = jobs;    }, [jobs]);
-  useEffect(() => { driversRef.current = drivers; }, [drivers]);
-  useEffect(() => { viewDayRef.current = viewDay; }, [viewDay]);
+  const jobsRef          = React.useRef([]);
+  const driversRef       = React.useRef([]);
+  const viewDayRef       = React.useRef(viewDay);
+  const stackRadiusRef   = React.useRef(stackRadius);
+  const ignoredStacksRef = React.useRef(ignoredStacks);
+  useEffect(() => { jobsRef.current          = jobs;         }, [jobs]);
+  useEffect(() => { driversRef.current       = drivers;      }, [drivers]);
+  useEffect(() => { viewDayRef.current       = viewDay;      }, [viewDay]);
+  useEffect(() => { stackRadiusRef.current   = stackRadius;  }, [stackRadius]);
+  useEffect(() => { ignoredStacksRef.current = ignoredStacks;}, [ignoredStacks]);
 
   // ── Initial data load from Supabase ────────────
   useEffect(() => {
@@ -1366,19 +1535,6 @@ function App() {
         const createdDrivers = [];
 
         // One new driver record per unique unknown name
-        // Similarity score for suggestion only — shared tokens / total unique tokens
-        const nameSimilarity = (a, b) => {
-          const ta = new Set(a.toLowerCase().split(/\s+/));
-          const tb = new Set(b.toLowerCase().split(/\s+/));
-          const shared = [...ta].filter(t => tb.has(t)).length;
-          return shared / Math.max(ta.size + tb.size - shared, 1);
-        };
-        const closestDriver = (tbName, pool) =>
-          pool.reduce((best, dr) => {
-            const score = nameSimilarity(dr.name, tbName);
-            return score > best.score ? { dr, score } : best;
-          }, { dr: null, score: 0 }).dr;
-
         const uniqueNames = [...new Set(needDriverMatch.map(j => j.tbDriver))];
         const unmatched   = []; // names with no exact match → go to dispatcher queue
         for (const tbName of uniqueNames) {
@@ -1443,28 +1599,43 @@ function App() {
         }
         setJobs(prev => prev.some(j => j.id === job.id) ? prev : [...prev, job]);
 
-        // Check if this new job's pickup is close to any assigned driver's drop
-        // for the current day — if so, surface a "potential stack" toast.
-        if (job.day === viewDayRef.current) {
-          const pc = jobCrd(job, 'pickup');
-          if (pc) {
-            const matches = [];
-            driversRef.current.forEach(driver => {
-              jobsRef.current
-                .filter(j => j.driverId === driver.id && j.day === viewDayRef.current && j.status !== 'cancelled')
-                .forEach(nearJob => {
-                  const dc = jobCrd(nearJob, 'drop');
-                  if (dc) {
-                    const dist = dMi(dc, pc);
-                    if (dist < 25) matches.push({ driver, nearJob, dist });
-                  }
-                });
+        // ── Driver match check ──────────────────────
+        // If the new job has a TowBook driver name but no assigned driver,
+        // try an exact match; if none found, add to the dispatcher queue.
+        if (job.tbDriver && !job.driverId) {
+          const pool  = driversRef.current;
+          const exact = pool.find(d => d.name.toLowerCase() === job.tbDriver.toLowerCase());
+          if (exact) {
+            const updated = { ...job, driverId: exact.id };
+            db.upsertJob(updated);
+            setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
+          } else {
+            setDriverMatchQueue(prev => {
+              if (prev.some(item => item.tbName === job.tbDriver)) return prev;
+              return [...prev, {
+                tbName:    job.tbDriver,
+                callNums:  [job.tbCallNum || job.id],
+                suggested: closestDriver(job.tbDriver, pool),
+              }];
             });
-            if (matches.length > 0) {
-              const toastId = uid();
-              setJobToasts(prev => [...prev, { id: toastId, job, matches }]);
-              setTimeout(() => setJobToasts(prev => prev.filter(t => t.id !== toastId)), 30000);
-            }
+          }
+        }
+
+        // ── Stacking check ──────────────────────────
+        // Only surface stacks involving this newly inserted job.
+        // The button modal continues to show all stacking opportunities.
+        if (job.day === viewDayRef.current) {
+          const dayJobs = [...jobsRef.current, job].filter(j => j.day === job.day && j.status !== 'cancelled');
+          const { results } = findPossibleStacks(dayJobs, driversRef.current, stackRadiusRef.current);
+          const newPairs = results.filter(m =>
+            (m.a.id === job.id || m.b.id === job.id) &&
+            !ignoredStacksRef.current.has(m.a.id + '|' + m.b.id)
+          );
+          if (newPairs.length > 0) {
+            setNewStackQueue(prev => {
+              const existingKeys = new Set(prev.map(m => m.a.id + '|' + m.b.id));
+              return [...prev, ...newPairs.filter(m => !existingKeys.has(m.a.id + '|' + m.b.id))];
+            });
           }
         }
       })
@@ -2018,14 +2189,21 @@ function App() {
       />
     )}
 
-    {/* Possible Stacking modal */}
+    {/* Possible Stacking modal — all opportunities, triggered by button */}
     {showStacking && <PossibleStackingModal data={stacks} radius={stackRadius} onRadiusChange={setStackRadius} onClose={() => setShowStacking(false)} onIgnore={ignoreStack} />}
 
-    {/* New-job stacking toasts */}
-    <NewJobToast
-      toasts={jobToasts}
-      onDismiss={id => setJobToasts(prev => prev.filter(t => t.id !== id))}
-    />
+    {/* New-sync stacking modal — only pairs involving newly inserted jobs */}
+    {newStackQueue.length > 0 && !driverMatchQueue.length && (
+      <NewStackModal
+        queue={newStackQueue}
+        onDismiss={() => setNewStackQueue(prev => prev.slice(1))}
+        onIgnore={() => {
+          const m = newStackQueue[0];
+          setIgnoredStacks(prev => { const n = new Set(prev); n.add(m.a.id + '|' + m.b.id); return n; });
+          setNewStackQueue(prev => prev.slice(1));
+        }}
+      />
+    )}
   </div>;
 }
 
