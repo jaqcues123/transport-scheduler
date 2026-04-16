@@ -242,9 +242,15 @@ function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
           {YARDS.map(y => <option key={y.id} value={y.id}>{y.short}</option>)}
         </select>
       </div>
-      <div style={{ flex: 1 }}><div style={{ fontSize: 8, color: C.dm, marginBottom: 1 }}>DRIVER</div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 8, color: C.dm, marginBottom: 1 }}>DRIVER 1</div>
         <select style={{ ...sS, fontSize: 10, padding: "3px 5px" }} value={job.driverId || ""} onChange={e => onUpdate({ driverId: e.target.value ? parseInt(e.target.value) : 0 })}>
           <option value="">Unassigned</option>
+          {drivers.map(d => <option key={d.id} value={d.id}>{dLb(d)}</option>)}
+        </select>
+      </div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 8, color: C.dm, marginBottom: 1 }}>DRIVER 2</div>
+        <select style={{ ...sS, fontSize: 10, padding: "3px 5px" }} value={job.driverId2 || ""} onChange={e => onUpdate({ driverId2: e.target.value ? parseInt(e.target.value) : null })}>
+          <option value="">None</option>
           {drivers.map(d => <option key={d.id} value={d.id}>{dLb(d)}</option>)}
         </select>
       </div>
@@ -257,7 +263,7 @@ function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
       </div>
     </div>
 
-    {job.tbDriver && <div style={{ fontSize: 10, color: C.dm, marginBottom: 4 }}>TB Driver: <strong style={{ color: C.am }}>{job.tbDriver}</strong></div>}
+    {(job.tbDriver || job.tbDriver2) && <div style={{ fontSize: 10, color: C.dm, marginBottom: 4 }}>TB Driver: <strong style={{ color: C.am }}>{[job.tbDriver, job.tbDriver2].filter(Boolean).join(", ")}</strong></div>}
 
     {/* Route legs with per-leg time and distance */}
     <div style={{ padding: "0 0 0 2px" }}>
@@ -357,8 +363,8 @@ function DriversTab({ jobs, drivers, viewDay, hpd, onExportCSV }) {
     // Sort: most hours first, then alphabetical for 0-hour drivers
     const dayJ = jobs.filter(j => j.day === viewDay && j.status !== "cancelled");
     out = [...out].sort((a, b) => {
-      const aH = dayJ.filter(j => j.driverId === a.id).reduce((s, j) => s + jobTotal(j), 0);
-      const bH = dayJ.filter(j => j.driverId === b.id).reduce((s, j) => s + jobTotal(j), 0);
+      const aH = dayJ.filter(j => j.driverId === a.id || j.driverId2 === a.id).reduce((s, j) => s + jobTotal(j), 0);
+      const bH = dayJ.filter(j => j.driverId === b.id || j.driverId2 === b.id).reduce((s, j) => s + jobTotal(j), 0);
       if (aH !== bH) return aH - bH; // fewest hours first
       return dLb(a).localeCompare(dLb(b)); // alphabetical for equal hours
     });
@@ -395,7 +401,7 @@ function DriversTab({ jobs, drivers, viewDay, hpd, onExportCSV }) {
     </div>
 
     {visDrivers.map(d => {
-      const dj      = dayJobs.filter(j => j.driverId === d.id);
+      const dj      = dayJobs.filter(j => j.driverId === d.id || j.driverId2 === d.id);
       const totalH  = dj.reduce((s, j) => s + jobTotal(j), 0);
       const totalMi = dj.reduce((s, j) => s + jobMiles(j), 0);
       const pct     = hpd > 0 ? totalH / hpd * 100 : 0;
@@ -1531,50 +1537,46 @@ function App() {
         fetchedJobs = fetchedJobs.map(j => assignedById[j.id] || j);
       }
 
-      // Auto-match TowBook driver names to local driver records for jobs that
-      // arrived from the sync script with tbDriver set but no driverId.
-      // Unknown drivers are created from the TowBook name so the assignment
-      // is preserved — dispatchers can fill in truck/yard details later.
-      const needDriverMatch = fetchedJobs.filter(
-        j => j.tbDriver && !j.driverId && j.status === 'scheduled'
-      );
-      if (needDriverMatch.length > 0) {
+      // Auto-match TowBook driver names to local driver records.
+      // Handles both driver slots (tbDriver → driverId, tbDriver2 → driverId2).
+      // Exact matches are assigned immediately; unmatched names go to the
+      // dispatcher queue with a `slot` field so the modal writes the right column.
+      {
         let currentDrivers = [...fetchedDrivers];
-        const createdDrivers = [];
+        const allPending = [
+          ...fetchedJobs.filter(j => j.tbDriver  && !j.driverId  && j.status === 'scheduled').map(j => ({ j, tbName: j.tbDriver,  slot: 'driverId'  })),
+          ...fetchedJobs.filter(j => j.tbDriver2 && !j.driverId2 && j.status === 'scheduled').map(j => ({ j, tbName: j.tbDriver2, slot: 'driverId2' })),
+        ];
 
-        // One new driver record per unique unknown name
-        const uniqueNames = [...new Set(needDriverMatch.map(j => j.tbDriver))];
-        const unmatched   = []; // names with no exact match → go to dispatcher queue
-        for (const tbName of uniqueNames) {
-          const exact = currentDrivers.find(dr =>
-            dr.name.toLowerCase() === tbName.toLowerCase()
-          );
-          if (!exact) {
-            unmatched.push(tbName);
+        if (allPending.length > 0) {
+          const matchedJobs = [];
+          allPending.forEach(({ j, tbName, slot }) => {
+            const match = currentDrivers.find(dr => dr.name.toLowerCase() === tbName.toLowerCase());
+            if (match) matchedJobs.push({ ...j, [slot]: match.id });
+          });
+          if (matchedJobs.length > 0) {
+            await db.batchUpsertJobs(matchedJobs);
+            const byId = Object.fromEntries(matchedJobs.map(j => [j.id, j]));
+            fetchedJobs = fetchedJobs.map(j => byId[j.id] || j);
           }
-        }
 
-        // Exact matches: assign immediately and persist
-        const matchedJobs = needDriverMatch.flatMap(j => {
-          const match = currentDrivers.find(dr =>
-            dr.name.toLowerCase() === j.tbDriver.toLowerCase()
-          );
-          return match ? [{ ...j, driverId: match.id }] : [];
-        });
-        if (matchedJobs.length > 0) {
-          await db.batchUpsertJobs(matchedJobs);
-          const byId = Object.fromEntries(matchedJobs.map(j => [j.id, j]));
-          fetchedJobs = fetchedJobs.map(j => byId[j.id] || j);
-        }
-
-        // Unmatched names → build dispatcher queue (one entry per unique TB name)
-        if (unmatched.length > 0) {
-          const queue = unmatched.map(tbName => ({
-            tbName,
-            callNums: needDriverMatch.filter(j => j.tbDriver === tbName).map(j => j.tbCallNum || j.id),
-            suggested: closestDriver(tbName, currentDrivers),
-          }));
-          setDriverMatchQueue(queue);
+          // Unmatched → dispatcher queue, one entry per unique (tbName, slot) pair
+          const seen = new Set();
+          const queue = [];
+          allPending.forEach(({ j, tbName, slot }) => {
+            const key = tbName + '|' + slot;
+            const match = currentDrivers.find(dr => dr.name.toLowerCase() === tbName.toLowerCase());
+            if (!match && !seen.has(key)) {
+              seen.add(key);
+              queue.push({
+                tbName,
+                slot,
+                callNums:  allPending.filter(p => p.tbName === tbName && p.slot === slot).map(p => p.j.tbCallNum || p.j.id),
+                suggested: closestDriver(tbName, currentDrivers),
+              });
+            }
+          });
+          if (queue.length > 0) setDriverMatchQueue(queue);
         }
       }
 
@@ -1608,23 +1610,36 @@ function App() {
         setJobs(prev => prev.some(j => j.id === job.id) ? prev : [...prev, job]);
 
         // ── Driver match check ──────────────────────
-        // If the new job has a TowBook driver name but no assigned driver,
-        // try an exact match; if none found, add to the dispatcher queue.
-        if (job.tbDriver && !job.driverId) {
-          const pool  = driversRef.current;
-          const exact = pool.find(d => d.name.toLowerCase() === job.tbDriver.toLowerCase());
-          if (exact) {
-            const updated = { ...job, driverId: exact.id };
+        // Check both driver slots. Exact match → assign immediately.
+        // No match → add to dispatcher queue with slot field.
+        {
+          const pool = driversRef.current;
+          let jobUpdates = {};
+          const toQueue = [];
+          for (const [tbName, slot] of [[job.tbDriver, 'driverId'], [job.tbDriver2, 'driverId2']]) {
+            if (!tbName || job[slot]) continue;
+            const exact = pool.find(d => d.name.toLowerCase() === tbName.toLowerCase());
+            if (exact) {
+              jobUpdates[slot] = exact.id;
+            } else {
+              toQueue.push({ tbName, slot });
+            }
+          }
+          if (Object.keys(jobUpdates).length > 0) {
+            const updated = { ...job, ...jobUpdates };
             db.upsertJob(updated);
             setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
-          } else {
+            job = updated;
+          }
+          if (toQueue.length > 0) {
             setDriverMatchQueue(prev => {
-              if (prev.some(item => item.tbName === job.tbDriver)) return prev;
-              return [...prev, {
-                tbName:    job.tbDriver,
-                callNums:  [job.tbCallNum || job.id],
-                suggested: closestDriver(job.tbDriver, pool),
-              }];
+              let next = [...prev];
+              toQueue.forEach(({ tbName, slot }) => {
+                if (!next.some(item => item.tbName === tbName && item.slot === slot)) {
+                  next.push({ tbName, slot, callNums: [job.tbCallNum || job.id], suggested: closestDriver(tbName, pool) });
+                }
+              });
+              return next;
             });
           }
         }
@@ -2166,22 +2181,22 @@ function App() {
         item={driverMatchQueue[0]}
         drivers={drivers}
         onAssign={async (driver, callNums) => {
-          // Assign the chosen existing driver to all affected jobs
-          const affected = jobs.filter(j => callNums.includes(j.tbCallNum || j.id) && !j.driverId);
-          const updated  = affected.map(j => ({ ...j, driverId: driver.id }));
+          const slot     = driverMatchQueue[0]?.slot || 'driverId';
+          const affected = jobs.filter(j => callNums.includes(j.tbCallNum || j.id) && !j[slot]);
+          const updated  = affected.map(j => ({ ...j, [slot]: driver.id }));
           await db.batchUpsertJobs(updated);
           const byId = Object.fromEntries(updated.map(j => [j.id, j]));
           setJobs(prev => prev.map(j => byId[j.id] || j));
           setDriverMatchQueue(prev => prev.slice(1));
         }}
         onCreateNew={async (tbName, callNums) => {
-          // Create a new driver record then assign
+          const slot   = driverMatchQueue[0]?.slot || 'driverId';
           const newId  = Math.max(0, ...drivers.map(d => d.id)) + 1;
           const newDrv = { id: newId, name: tbName, truck: '', yard: YARDS[0]?.id || '' };
           await db.upsertDriver(newDrv);
           setDrivers(prev => [...prev, newDrv]);
-          const affected = jobs.filter(j => callNums.includes(j.tbCallNum || j.id) && !j.driverId);
-          const updated  = affected.map(j => ({ ...j, driverId: newId }));
+          const affected = jobs.filter(j => callNums.includes(j.tbCallNum || j.id) && !j[slot]);
+          const updated  = affected.map(j => ({ ...j, [slot]: newId }));
           await db.batchUpsertJobs(updated);
           const byId = Object.fromEntries(updated.map(j => [j.id, j]));
           setJobs(prev => prev.map(j => byId[j.id] || j));

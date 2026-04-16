@@ -75,6 +75,37 @@ def parse_addr(raw):
     return strip_biz_name(clean_addr(raw or ''))
 
 
+def split_drivers(raw):
+    """Split a TowBook driver string that may contain multiple names.
+
+    Tries unambiguous delimiters first (comma, semicolon, tab), then falls
+    back to 2+ consecutive spaces as a last resort.  Returns a list of 1 or
+    2 non-empty stripped name strings — never more than 2.
+
+    Space-only separation ("John Smith Jane Doe") is intentionally not
+    attempted because driver names contain spaces and we cannot reliably
+    split them without matching against the roster.  Two or more consecutive
+    spaces are treated as a separator since they almost never appear inside
+    a single name.
+    """
+    if not raw or not raw.strip():
+        return []
+    raw = raw.strip()
+
+    # Comma, semicolon, or tab — unambiguous
+    for pattern in (r'\s*[,;]\s*', r'\t+'):
+        parts = [p.strip() for p in re.split(pattern, raw) if p.strip()]
+        if len(parts) > 1:
+            return parts[:2]
+
+    # Two or more consecutive spaces
+    parts = [p.strip() for p in re.split(r' {2,}', raw) if p.strip()]
+    if len(parts) > 1:
+        return parts[:2]
+
+    return [raw]
+
+
 def sched_to_day(sched):
     """'4/8/26 7:00 AM' → '2026-04-08'. Falls back to today on parse failure."""
     for fmt in ['%m/%d/%y %I:%M %p', '%m/%d/%Y %I:%M %p', '%m/%d/%y', '%m/%d/%Y']:
@@ -293,6 +324,12 @@ def scrape_tab(page, tab_id, tab_name):
         drop   = parse_addr(drop)
         day    = sched_to_day(sched) if sched else date.today().isoformat()
 
+        driver_parts = split_drivers(driver)
+        driver1 = driver_parts[0] if len(driver_parts) > 0 else ''
+        driver2 = driver_parts[1] if len(driver_parts) > 1 else ''
+        if len(driver_parts) > 1:
+            print(f"  Split drivers for {call_num}: {driver_parts}")
+
         if pickup or drop:
             calls.append({
                 'call_num':   call_num,
@@ -304,7 +341,8 @@ def scrape_tab(page, tab_id, tab_name):
                 'drop_zip':   extract_zip(drop),
                 'scheduled':  sched,
                 'reason':     reason,
-                'driver':     driver,
+                'driver':     driver1,
+                'driver2':    driver2,
                 'truck':      truck,
                 'day':        day,
                 'source_tab': tab_name,
@@ -373,8 +411,8 @@ def sync_to_supabase(tb_calls):
     resp = sb.from_("jobs") \
              .select("id, tb_call_num, tb_desc, tb_account, pickup_addr, drop_addr, "
                      "pickup_zip, drop_zip, pickup_lat, pickup_lon, drop_lat, drop_lon, "
-                     "tb_scheduled, tb_reason, tb_driver, truck_and_equipment, day, "
-                     "yard_id, driver_id, status, priority, notes, stops, added_at") \
+                     "tb_scheduled, tb_reason, tb_driver, tb_driver_2, truck_and_equipment, day, "
+                     "yard_id, driver_id, driver_id_2, status, priority, notes, stops, added_at") \
              .execute()
 
     existing = {r["tb_call_num"]: r for r in (resp.data or []) if r.get("tb_call_num")}
@@ -431,6 +469,7 @@ def sync_to_supabase(tb_calls):
             "tb_scheduled": keep(call["scheduled"], "tb_scheduled"),
             "tb_reason":    keep(call["reason"],    "tb_reason"),
             "tb_driver":    keep(call["driver"],    "tb_driver"),
+            "tb_driver_2":  keep(call["driver2"],   "tb_driver_2"),
             "truck_and_equipment": keep(call["truck"], "truck_and_equipment"),
             "day":          keep(call["day"],       "day"),
             "updated_at":   now,
@@ -444,8 +483,9 @@ def sync_to_supabase(tb_calls):
             # Existing record — carry forward all dispatcher-managed fields
             row["id"]        = ex["id"]
             row["added_at"]  = ex["added_at"]
-            row["yard_id"]   = ex["yard_id"]
-            row["driver_id"] = ex["driver_id"]
+            row["yard_id"]    = ex["yard_id"]
+            row["driver_id"]  = ex["driver_id"]
+            row["driver_id_2"] = ex.get("driver_id_2")
             row["status"]    = "active" if is_active else ex["status"]
             row["priority"]  = ex["priority"]
             row["notes"]     = ex.get("notes")
