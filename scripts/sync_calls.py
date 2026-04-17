@@ -270,17 +270,19 @@ def scrape_tab(page, tab_id, tab_name):
     # Completed tab lazy-loads rows as you scroll. Scroll the entry list
     # container repeatedly until no new rows appear (max 10 passes).
     if tab_name == "Completed":
-        for _ in range(10):
+        for pass_num in range(20):
             prev = page.locator("li.entryRow").count()
             page.evaluate("""
-                const el = document.querySelector('.entryListContainer, .dispatch-list, #entryList, .entryList')
-                        || document.querySelector('[class*="entryList"], [id*="entryList"]')
+                const el = document.getElementById('dcslist')
+                        || document.querySelector('.entriesTable')
+                        || document.querySelector('li.entryRow')?.parentElement
                         || document.body;
                 el.scrollTop = el.scrollHeight;
                 window.scrollTo(0, document.body.scrollHeight);
             """)
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(1_200)
             curr = page.locator("li.entryRow").count()
+            print(f"  Completed scroll pass {pass_num + 1}: {prev} → {curr} rows")
             if curr == prev:
                 break
         print(f"  Scrolled Completed tab — {page.locator('li.entryRow').count()} total rows loaded")
